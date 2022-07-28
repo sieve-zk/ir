@@ -1,0 +1,140 @@
+
+\newpage
+\begin{appendices}
+\section{Textual Syntax Building Blocks}\label{textblocks}
+
+This Appendix describes the building blocks used by section \ref{text} of this specification.
+It will briefly overview the number formats and identifiers used by the SIEVE IR.
+Throughout this section both tokens (terminal symbols) and nonterminal symbols are described, thus indications of the intended interpretation are given.\\
+
+The IR defines binary, octal, decimal, and hexadecimal literals as interchangeably, with conventional prefixes \texttt{0b}, \texttt{0o}, and \texttt{0x} for binary, octal, and hexadecimal literals.
+Decimal literals have no prefixes, but must not have leading zeros.
+All numeric literals represent unbounded positive integers.
+A complete attribute grammar is provided later in this appendix.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{numeric-literal}{0} ::= \ttNontermN{binary-literal}{1} | \ttNontermN{octal-literal}{1}
+                      | \ttNontermN{decimal-literal}{1} | \ttNontermN{hex-literal}{1}\ttSem
+    \ttNontermN{numeric-literal}{0}.value := match \{
+      case \ttNontermN{binary-literal}{1}: \ttNontermN{binary-literal}{1}.value;
+      ...
+      case \ttNontermN{hex-literal}{1}: \ttNontermN{hex-literal}{1}.value;
+    \}
+\end{alltt}
+
+The IR uses numeric identifiers for wires, or \ttNonterm{wire-number}.
+These carry an index into the  \semGlobal{wirset} described by section \ref{wireset_text}.
+Although \ttNonterm{wire-number}s are written here in BNF, they are to be interpreted as tokens, not allowing space between elements.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{wire-number}{0} ::= `\$' \ttNontermN{numeric-literal}{1}\ttSem
+    \ttNontermN{wire-number}{0}.index := \ttNontermN{numeric-literal}{1}.value;
+\end{alltt}
+
+The IR defines the following syntax for a Field Element Literal.
+The Field Element in general is an element of the Galois Field defined for the statement.
+For $GF(p^1)$, this is a numeric literal $\bmod\ p$ encased with angle braces.
+The \synNonterm{field-literal} should be interpreted as allowing spaces between elements. \\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{field-literal}{0} ::= `<' \ttNontermN{numeric-literal}{1} `>'\ttSem
+    fail_if(\ttNontermN{numeric-literal}{1}.value >= \ttGlobal{p});
+    \ttNontermN{field-literal}{0}.value := \ttNontermN{numeric-literal}{1}.value;
+\end{alltt}
+
+For referencing previously defined function gates and loop iterators, the \synNonterm{label} is used as a lookup key.
+Its form is intended to be similar to a C-style identifier, but allows ``grouping'' similar names with separators `\texttt{.}' and `\texttt{::}'.
+It should be interpreted as a token, disallowing spaces.\\
+
+\begin{alltt}\ttSyn
+  \ttNonterm{label} ::= [`a'-`z' | `A'-`Z' | `_']  [`a'-`z' | `A'-`Z' | `0'-`9' | `_']*
+           (
+              [`.' | `::']
+              [`a'-`z' | `A'-`Z' | `_']  [`a'-`z' | `A'-`Z' | `0'-`9' | `_']*
+           )*
+\end{alltt}
+
+The full format for numeric literals is given here.
+They take the form of positive, unbounded integers in one of binary, octal, decimal, or hexadecimal format.
+To indicate binary, octal, and hexadecimal, a \texttt{0b}, \texttt{0o}, or \texttt{0x} prefix is used.
+Decimal numbers have no prefix, but may not have leading zeros, to avoid confusion with C-Style octal numerals (leading zero, with no ``o'' distinguisher).
+Although numeric literals are written here in BNF, they are to be interpreted as tokens, not allowing space between elements.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{binary-literal}{0} ::= [ `0b' | `0B' ] [ \ttNontermN{binary-digit}{1..m} ]+\ttSem
+    \ttNontermN{binary-literal}{0}.value := 0;
+    for(i from 1 to m) \{
+      \ttNontermN{binary-literal}{0}.value *= 2;
+      \ttNontermN{binary-literal}{0}.value += \ttNontermN{binary-digit}{i}.value;
+    \}\ttSyn
+  \ttNontermN{binary-digit}{0} ::= `0' | `1'\ttSem
+    \ttNontermN{binary-digit}{0}.value := match \{
+      case `0': 0;
+      case `1': 1;
+    \}\ttSyn
+
+  \ttNontermN{octal-literal}{0} ::= `0o' [ \ttNontermN{octal-digit}{1..m} ]+\ttSem
+    \ttNontermN{octal-literal}{0}.value := 0;
+    for(i from 1 to m) \{
+      \ttNontermN{octal-literal}{0}.value *= 8;
+      \ttNontermN{octal-literal}{0}.value += \ttNontermN{octal-digit}{i}.value;
+    \}\ttSyn
+  \ttNontermN{octal-digit}{0} ::= `0' | `1' | `2' | `3' | `4' | `5' | `6' | `7'\ttSem
+    \ttNontermN{octal-digit}{0}.value := match \{
+      case `0': 0;
+      ...
+      case `7': 7;
+    \}\ttSyn
+
+
+  \ttNontermN{decimal-literal}{0} ::= `0'\ttSem
+    \ttNontermN{decimal-literal}{0}.value := 0;\ttSyn
+  \ttNontermN{decimal-literal}{0} ::= \ttNontermN{no-zero-decimal-digit}{1} [ \ttNontermN{decimal-digit}{1..m} ]*\ttSem
+    \ttNontermN{decimal-literal}{0}.value := \ttNontermN{no-zero-decimal-digit}{1};
+    for(i from 1 to m) \{
+      \ttNontermN{decimal-literal}{0}.value *= 10;
+      \ttNontermN{decimal-literal}{0}.value += \ttNontermN{decimal-digit}{i}.value;
+    \}\ttSyn
+  \ttNontermN{no-zero-decimal-digit}{0} ::= `1' | `2' | `3' | `4' | `5' | `6' |
+                             `7' | `8' | `9'\ttSem
+    \ttNontermN{no-zero-decimal-digit}{0}.value := match \{
+      case `1': 1;
+      ...
+      case `9': 9;
+    \}\ttSyn
+  \ttNontermN{decimal-digit}{0} ::= `0' | \ttNontermN{no-zero-decimal-digit}{1}\ttSem
+    \ttNontermN{decimal-digit}{0} := match \{
+      case `0': 0;
+      case \ttNontermN{no-zero-decimal-digit}{1}: \ttNontermN{no-zero-decimal-digit}{1}.value;
+    \}\ttSyn
+
+  \ttNontermN{hex-literal}{0} ::= [ `0x' | `0X' ] [ \ttNontermN{hex-digit}{1..m} ]+\ttSem
+    \ttNontermN{hex-literal}{0}.value := 0;
+    for(i from 1 to m) \{
+      \ttNontermN{hex-literal}{0}.value *= 16;
+      \ttNontermN{hex-literal}{0}.value += \ttNontermN{hex-digit}{i}.value;
+    \}\ttSyn
+  \ttNontermN{hex-digit}{0} ::= `0' | `1' | `2' | `3' | `4' | `5' | `6' | `7'
+                | `8' | `9' | `a' | `b' | `c' | `d' | `e' | `f'
+                | `A' | `B' | `C' | `D' | `E' | `F'\ttSem
+    \ttNontermN{hex-digit}{0}.value := match \{
+      case `0': 0;
+      ...
+      case `9': 9;
+      case `a': 10;
+      ...
+      case `f': 15;
+      case `A': 10;
+      ...
+      case `F': 15;
+    \}\ttSyn
+\end{alltt}
+
+The IR text format will also allow ``comments'' of the following form, which will be treated as whitespace during parsing.
+
+\begin{alltt}\ttSyn
+  \ttNonterm{comment} ::= `//' [ `\{any character except {\textbackslash}n\}' ]* `{\textbackslash}n'
+  \ttNonterm{comment} ::= `/*' [ `\{any character except the sequence `*/'\}' ]* `*/'
+\end{alltt}
+
+\end{appendices}

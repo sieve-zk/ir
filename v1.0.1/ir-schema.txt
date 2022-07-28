@@ -1,0 +1,123 @@
+struct Wire {
+   id          :uint64;
+}
+
+table GateConstant {
+   output      :Wire;
+   constant    :[ubyte];
+}
+
+table GateAssertZero {
+   input       :Wire;
+}
+
+table GateCopy {
+   output      :Wire;
+   input       :Wire;
+}
+
+table GateAdd {
+   output      :Wire;
+   left        :Wire;
+   right       :Wire;
+}
+
+table GateMul {
+   output      :Wire;
+   left        :Wire;
+   right       :Wire;
+}
+
+table GateAddConstant {
+   output      :Wire;
+   input       :Wire;
+   constant    :[ubyte];
+}
+
+table GateMulConstant {
+   output      :Wire;
+   input       :Wire;
+   constant    :[ubyte];
+}
+
+table GateAnd {
+   output      :Wire;
+   left        :Wire;
+   right       :Wire;
+}
+
+table GateXor {
+   output      :Wire;
+   left        :Wire;
+   right       :Wire;
+}
+
+table GateNot {
+   output      :Wire;
+   input       :Wire;
+}
+
+table GateFree {
+   first       :Wire;
+   last        :Wire;
+}
+
+table GateInstance {
+   output      :Wire;
+}
+
+table GateShortWitness {
+   output      :Wire;
+}
+
+union GateSet {
+   GateConstant,
+   GateAssertZero,
+   GateCopy,
+   GateAdd,
+   GateMul,
+   GateAddConstant,
+   GateMulConstant,
+   GateAnd,
+   GateXor,
+   GateNot,
+   GateFree,
+   GateInstance,
+   GateShortWitness,
+}
+
+table Gate {
+   gate      :GateSet;
+}
+
+table InputValue {
+   value       :[ubyte];
+}
+
+union Message {
+   Relation,
+   Instance,
+   Witness,
+}
+
+table Header {
+   version              :string;
+   profile              :string;
+   field_characteristic :[ubyte];
+   field_degree         :uint32;
+}
+
+table Relation {
+   header               :Header;
+   gates                :[Gate];
+}
+
+table Instance {
+   header              :Header;
+   common_inputs       :[InputValue];
+}
+
+table Witness {
+   header              :Header;
+   short_witness       :[InputValue];
+}

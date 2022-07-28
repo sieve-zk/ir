@@ -1,0 +1,10 @@
+= SIEVE Intermediate Representation
+
+The SIEVE Intermediate Representation (IR) is a joint deliverable of all performers on the https://www.darpa.mil/program/securing-information-for-encrypted-verification-and-evaluation[DARPA SIEVE Program].
+The IR is a bridge between the program's human-facing frontends (TA1) and Zero Knowledge Proof Systems (TA2).
+It represents ZK statements using circuits.
+
+The Program has elected to release the IR Specification as a public artifact in the interest of promoting our research and driving the adoption of ZK Proofs beyond blockchain applications.
+
+This material is based upon work supported by DARPA under Contracts No. HR001120C0087, HR001120C0086, HR001120C0085 and Agreement No. HR00112020021.
+Any opinions, findings and conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of DARPA.

@@ -1,0 +1,732 @@
+\newpage
+\section{IR Overview and Abstract Syntax}\label{overview}
+This section will describe the SIEVE IR at an overview level and should be sufficient to grant a workable understanding of the IR.
+Section \ref{text} will provide authoritative textual syntax and IR semantics; Section \ref{binary} will provide binary syntax.
+Mentioned previously, the IR has three (3) ``resources'' which may be thought of as files but could also be provided via other methods -- e.g. streams, shared memory, and so on.
+These resources take the R(x; w) form: R is the relation, x is the instance, and w is the witness. \\
+
+The IR's relation represents a circuit using sequence of directives to manage a sparsely populated lists of wire values.
+A value is described by its index in the list, and most directives will insert a new value at an output index.
+A wire's index is represented as an integer in the range of $0$ and $2^{64}-1$.
+Although a directive may reference or insert a value at any index, using sequential indexes can improve performance.
+The lists are considered sparse for two reasons. 
+First, wires may be removed from the list to conserve memory.
+Second, the minimal constraints on output index usage means that gaps may form in the wires list, although this is discouraged.\\
+
+The instance and witness resources are streams of values.
+Certain directives in the relation will consume a value from either stream.\\
+
+\lstset{language=ir}
+\lstset{frame=single}
+\lstset{escapechar=\#}
+
+\newcommand{\asTemplate}[1]{{\color{SyntaxGreen}{\textit{\{\texttt{#1}\}}}}}
+\newcommand{\asRepeat}[0]{{\color{SyntaxGreen}{...}}}
+
+This overview uses ``template'' texts, surrounded with boxes, and where ``template expressions'' may be repeated and replaced by concrete expressions described elsewhere.
+In general, whitespace is optional and ignored, except for a single whitespace element delimiting non-obvious token sequences.
+Template expressions are italicized with surrounding delimiters with dark green text, for example \asTemplate{expression}.
+All template expressions will be described as appropriate literal values, or sub expressions.
+Repetition of a template expression is indicated with an ellipsis (\asRepeat), also in green.
+Tables following each template will describe the semantics of each template.\\
+
+\subsection{Resource Header Overview}\label{header_overview}
+The first component of the IR is a header block with evaluation parameters for the circuit.
+The header is shared by all resources.
+There are two parameters defined by the header: a version number for quick recognition of the IR, and the computation field.\\
+
+\begin{lstlisting}
+version #\asTemplate{major}#.#\asTemplate{minor}#.#\asTemplate{patch}#;
+
+field
+  characteristic #\asTemplate{p}#
+  degree 1;
+\end{lstlisting}
+
+\subsubsection*{Header Semantics}
+
+\noindent
+\begin{tabularx}{\textwidth}{|p{1in}|p{1in}|X|}
+  \hline
+  \textbf{Template Expression} & \textbf{Name} & \textbf{Description} \\
+  \hline
+  \asTemplate{major}\newline
+  \asTemplate{minor}\newline
+  \asTemplate{patch}\newline & Version & The version of the IR is given in \href{https://semver.org/}{semantic version form}.
+  This must match one of the versions given in the \nameref{history} section of this document. \newline
+  \newline
+  Syntactically, these parameters must be positive unbounded integers, in decimal form, with no leading zeros.\\
+  \hline
+  \asTemplate{p} & Field & The field governs the domain in which proofs may be expressed.
+  It may be either $GF(p)$ or $GF(2)$ (a special case of the former).
+  The syntax gives a characteristic ($p$), and a degree ($n$) which would describe a field $GF(p^n)$.
+  However the degree is fixed to one (1).\newline
+  \newline
+  The $p$ variable may be an unbounded integer, and must be prime. \\
+  \hline
+\end{tabularx}
+
+\subsection{Instance and Short Witness Overview}\label{ins_wit_overview}
+Syntactically each of the instance and short witness is a sequence of field elements, acting as a stream.
+Certain directives in the relation will consume a value from one of these streams.
+If values in either stream are exhausted this is a failure of \textit{evaluation validity}.
+If values remain in a stream after processing then this is also an \textit{evaluation invalidity}.\\
+
+\begin{lstlisting}
+#\asTemplate{header}#
+
+#\asTemplate{type}# @begin
+  < #\asTemplate{c}# > ; #\asRepeat#
+@end
+\end{lstlisting}
+
+\subsubsection*{Instance and Witness Semantics}
+
+\noindent
+\begin{tabularx}{\textwidth}{|p{1in}|X|p{1.5in}|p{1.75in}|}
+  \hline
+  \textbf{Template Expression}
+  & \textbf{Description}
+  & \textbf{Syntactic\newline Constraints}
+  & \textbf{Semantic\newline Constraints} \\
+  \hline
+  \asTemplate{header}
+  & A header, as described in section \ref{header_overview}, is required here.
+  & See section \ref{header_overview}.
+  & The $\{p\}$ variable is captured in this section. \\
+  \hline
+  \asTemplate{type}
+  & Indicates whether this resource is the instance or witness.
+  & Must be the exact text \texttt{instance} or \texttt{short\_witness}. & \\
+  \hline
+  \asTemplate{c}\asRepeat
+  & Each \asTemplate{c} is a literal constant specified as a gate input.
+  & A numeric literal, which is syntactically positive and unbounded.
+  & Must be in the range of $0$ up to $\{p\}$. \\
+  \hline
+\end{tabularx}
+
+\subsection{Relation Overview: Structure, Gate Set, and Feature Toggles}\label{rel_structure_overview}
+The relation starts by describing its own contents, first by which gates it may use (the \textit{gate set}) then by which uniformity features it may use (\textit{feature toggles}).
+Following these is a list of function gate declarations, a list of the named function gates allowed in the relation, along with function gate definitions.
+Lastly is the body of  the relation, the list of directives making up the circuit.\\
+
+\begin{lstlisting}
+#\asTemplate{header}#
+relation 
+gate_set: #\asTemplate{gateset}#;
+features: #\asTemplate{features}#;
+@begin
+  #\asTemplate{functions}\asRepeat#
+  #\asTemplate{directive}\asRepeat#
+@end
+\end{lstlisting}
+
+Each template expression is described in this table.\\
+
+\noindent
+\begin{tabularx}{\textwidth}{|p{1.25in}|p{1in}|X|}
+  \hline
+  \textbf{Template \newline Expression} & \textbf{Name} & \textbf{Description} \\
+  \hline
+  \asTemplate{header}
+  & Header
+  & A header, as described in section \ref{header_overview}, is required here. \\
+  \hline
+  \asTemplate{gateset}
+  & \textit{Gate set}
+  & The \textit{gate set} describes the allowable gate directives of the circuit.
+  The actual gate directives will be described in section \ref{function_gate_overview}.
+  There are two \textit{canonical gate sets}, either \texttt{arithmetic} or \texttt{boolean}.
+  If a \texttt{canonical gate set} is not desired, then a \textit{partial gate set} may described as the enumeration of gate names.\newline
+  \newline
+  A \textit{partial gate set} is defined by a comma separated subset of the gates from a \textit{canonical gate set}.
+  For \texttt{arithmetic}, these would be \texttt{@add}, \texttt{@addc}, \texttt{@mul}, and \texttt{@mulc}; and for \texttt{boolean} gates these would be \texttt{@and}, \texttt{@not}, and \texttt{@xor}.
+  If an \textit{partial gate set} enumeration were empty, it would be considered a semantic error.
+  \\
+  \hline
+  \asTemplate{features}
+  & \textit{Feature Toggles}
+  & The feature toggles are a list of optional features which may be enabled or disabled by their presence.
+  If a feature is present, it must appear in a comma separated set. The allowed features are \texttt{@function}, \texttt{@for}, and \texttt{@switch}\newline
+  \newline The toggles for \texttt{@for} and \texttt{@switch} each describes whether for loops (subsection \ref{loop_overview}) or switch-case statements (subsection \ref{switch_overview}) are enabled.
+  The toggle for \texttt{@function} indicates whether function gates (subsection \ref{function_gate_overview}) are allowed, except for anonymous functions within the body of a for loop or switch-case statement.
+  If no features are enabled, then the keyword \texttt{simple} should take the feature list's place.\newline
+  \newline
+  Unless the \textit{feature toggle} is \texttt{simple}, wires between $2^{63}$ and $2^{64} - 1$ are reserved as ``ephemeral wires'', meaning that the frontend may not emit them.
+  Instead, the backend may insert them as needed.\\
+  \hline
+  \asTemplate{functions}\asRepeat
+  & Function Gate Declarations
+  & This is a list of function gate declarations.
+  Each declares a named function gate which may be used as a \asTemplate{directive}.
+  Further description will be given in subsection \ref{function_invoke_overview}\\
+  \hline
+  \asTemplate{directive}\asRepeat & Directives & This is a list of directives, each directive will be described in further subsections \ref{rel_gates_overview}, \ref{function_gate_overview}, \ref{loop_overview}, and \ref{switch_overview}. \\
+  \hline
+\end{tabularx}
+
+\subsection{Relation Overview: Simple Gate Directives}\label{rel_gates_overview}
+Most of the relation is described through lists of directives.
+``Gate directives'' perform calculations on their inputs and produce an output.
+In general, gate directives will look like the assignment of the calculation's result to a wire.
+There are three allowed forms for a gate directive.\\
+
+\begin{itemize}
+  \item \textbf{Binary} directives have two wire inputs, and one output. They are written as
+  \begin{lstlisting}
+  $#\asTemplate{x}# <- #\asTemplate{calculation}# ( $#\asTemplate{y}# , $#\asTemplate{z}# );
+  \end{lstlisting}
+  \item \textbf{Binary constant} directives have one wire input, one constant input, and one output. They are written as
+  \begin{lstlisting}
+  $#\asTemplate{x}# <- #\asTemplate{calculation}# ( $#\asTemplate{y}# , < #\asTemplate{c}# > );
+  \end{lstlisting}
+  \item \textbf{Unary} directives have one wire input, and one output. They are written as
+  \begin{lstlisting}
+  $#\asTemplate{x}# <- #\asTemplate{calculation}# ( $#\asTemplate{y}# );
+  \end{lstlisting}
+\end{itemize}
+
+The allowed \asTemplate{calculation}s for each directive vary by the profile given in the header.
+Each of the given function names can be considered a keyword in the IR language. \\
+
+\begin{itemize}
+  \item Under the \texttt{boolean} \textit{canonical gate set}, the following calculations are defined.
+  \begin{itemize}
+    \item \texttt{@and} is a binary directive which computes logical and.
+    \item \texttt{@xor} is a binary directive which computes logical exclusive or.
+    \item \texttt{@not} is a unary directive which computes logical negation.
+  \end{itemize}
+  \item Under the \texttt{arithmetic} \textit{canonical gate set}, the following calculations are defined.
+  \begin{itemize}
+    \item \texttt{@mul} is a binary directive which computes field multiplication.
+    \item \texttt{@add} is a binary directive which computes field addition.
+    \item \texttt{@mulc} is a binary constant directive which computes field multiplication.
+    \item \texttt{@addc} is a binary constant directive which computes field addition.
+  \end{itemize}
+\end{itemize}
+
+In both profiles, five special directives, called the \emph{common directives}, are allowed: Copy, Assignment, Assert Zero, Input (instance and short\_witness), and Deletion, as indicated below.
+Regardless of \textit{gate set}, these directives are always allowed.
+\begin{itemize}
+  \item \textbf{Copy} will duplicate the value of one variable into another variable.
+  \begin{lstlisting}
+  $#\asTemplate{x}# <- $#\asTemplate{y}#;
+  \end{lstlisting}
+  \item \textbf{Assignment} will give one variable a constant value.
+  \begin{lstlisting}
+  $#\asTemplate{x}# <- < #\asTemplate{c}# >;
+  \end{lstlisting}
+  \item \textbf{Assert Zero} will check that a variable is equivalent to zero (0), otherwise it constitutes an \textit{evaluation invalidity}.
+  \begin{lstlisting}
+  @assert_zero( $#\asTemplate{y}# );
+  \end{lstlisting}
+  \item \textbf{Input} directives have a single output wire, and read the next value of the named stream.
+    The \asTemplate{input-stream} may be either of \verb|@short_witness| or \verb|@instance|, indicating which of the input streams to read from.
+    These may be considered keywords of the IR language.
+  \begin{lstlisting}
+  $#\asTemplate{x}# <- #\asTemplate{input-stream}#;
+  \end{lstlisting}
+  \item \textbf{Deletion} will remove a wire or a range of wires from the wires list.
+  \begin{lstlisting}
+  @delete( $#\asTemplate{y}# );
+  @delete( $#\asTemplate{a}#, $#\asTemplate{b}# );
+  \end{lstlisting}
+\end{itemize}
+
+The following table describes each of the template expressions used in this subsection.\\
+
+\noindent
+\begin{tabularx}{\textwidth}{|p{1in}|X|p{1.5in}|p{1.75in}|}
+  \hline
+  \textbf{Template Expression}
+  & \textbf{Description}
+  & \textbf{Syntactic\newline Constraints}
+  & \textbf{Semantic\newline Constraints} \\
+  \hline
+  \asTemplate{x}
+  & A single directive output wire specified as a 0-based index.
+  & A numeric literal in the range of $[0; 2^{64})$.
+  & No \asTemplate{x} wire may appear more than once, even if the \asTemplate{x} has been deleted previously.\newline
+  \newline
+  Unless the \textit{feature toggle} is \texttt{simple}, \asTemplate{x} must not exceed $2^{63}$\\
+  \hline
+  \asTemplate{y} \newline
+  \asTemplate{z}
+  & A single directive input wire specified as a 0-based index.
+  & A numeric literal in the range of $[0; 2^{64})$.
+  & A wire \asTemplate{y} or \asTemplate{z} must have been assigned a value before appearing as a \asTemplate{y} or a \asTemplate{z} and must not have been previously deleted.\newline
+  \newline
+  Unless the \textit{feature toggle} is \texttt{simple}, \asTemplate{y} or \asTemplate{z} must not exceed $2^{63}$\\
+  \hline
+  \asTemplate{c}
+  & A literal constant specified as a gate input.
+  & A numeric literal which is syntactically an unbounded positive integer.
+  & \asTemplate{c} must be in the range of $0$ up to but not including \asTemplate{p}. \\
+  \hline
+  \asTemplate{a}, \newline
+  \asTemplate{b}
+  & A range of wires starting at \asTemplate{a} and concluding at \asTemplate{b}, both inclusive.
+  & A numeric literal in the range of $[0; 2^{64})$.
+  & Each wire between \asTemplate{a} and \asTemplate{b} must have previously been assigned a value and must not have been previously deleted.\newline
+  \newline
+  Unless the \textit{feature toggle} is \texttt{simple}, no wire in this range must exceed $2^{63}$.\\
+  \hline
+\end{tabularx}
+
+\subsection{Relation Overview: Function Gates}\label{function_gate_overview}
+The function gate feature adds a function declaration and two directives to the IR.
+
+\begin{description}[labelindent=0.375in]
+    \item[Declaration] Declares a named function gate for later use.
+      These must be listed together at the beginning of the relation.
+    \item[Invocation] Invokes a previously declared function gate.
+    \item[Anonymous Invocation] Define a function gate at the point of its invocation.
+\end{description}
+
+Should a backend wish not to support function gates directly, they may be ``inlined'', replacing their invocations with a copy of their body.
+A procedure for this is outlined in section \ref{inlining}.\\
+
+\subsubsection*{Function Gate Declaration}\label{function_declare_overview}
+Function gates are declared ahead of time and invoked later.
+Their declarations indicate the number of wires entering and exiting the function-gate, as well as the number of instance and short witness values it will consume.\\
+
+\begin{lstlisting}
+@function(#\asTemplate{name}#, @out: #\asTemplate{out}#, @in: #\asTemplate{in}#,
+    @instance: #\asTemplate{n\_instance}#, @short_witness: #\asTemplate{n\_s\_witness}#)
+  #\asTemplate{directives}\asRepeat#
+@end
+\end{lstlisting}
+
+\subsubsection*{Function Gate Declaration Semantics}
+
+\noindent
+\begin{tabularx}{\textwidth}{|p{1.25in}|X|p{1.5in}|p{1.375in}|}
+  \hline
+  \textbf{Template\newline Expression}
+  & \textbf{Description}
+  & \textbf{Syntactic\newline Constraints}
+  & \textbf{Semantic\newline Constraints} \\
+  \hline
+  \asTemplate{name}
+  & The name by which this function gate will be referenced.
+  & This is a C-like identifier, but may also use \texttt{.} or \texttt{::} for grouping similar functions.
+  & The name must not have previously been used in another function gate declaration. \\
+  \hline
+  \asTemplate{out}
+  & The number of outputs wires from the subcircuit.
+  & Integer literal between $0$ and $2^{64}-1$.
+  & Gate directives may output on wires $0$ through $\asTemplate{out} - 1$ to assign the subcircuit's output wires.\\
+  \hline
+  \asTemplate{in}
+  & The number of input wires from the subcircuit.
+  & Integer literal between $0$ and $2^{64}-1$.
+  & Gate directives may input from wires $\asTemplate{out}$ through $\asTemplate{in} + \asTemplate{out} -1$ to consume the subcircuit's input wires.\\
+  \hline
+  \asTemplate{n\_instance}
+  & The number of instance values consumed the subcircuit.
+  & Integer literal between $0$ and $2^{64}-1$.
+  & \asTemplate{directives}\asRepeat\  must have enough \texttt{@instance} directives or function gate invocations so that the \texttt{@instance} directive count plus all the invocations' \asTemplate{n\_instance}s is \asTemplate{n\_instance}, exactly.\\
+  \hline
+  \asTemplate{n\_s\_witness}
+  & The number of short witness values consumed by the subcircuit.
+  & Integer literal between $0$ and $2^{64}-1$.
+  & \asTemplate{directives}\asRepeat\ must have enough \texttt{@short\_witness} directives or function gate invocations so that the \texttt{@short\_witness} directive count plus all the invocations' \asTemplate{n\_s\_witness}s is \asTemplate{n\_s\_witness}, exactly.\\
+  \hline
+  \asTemplate{directives}\asRepeat
+  & A list of directives (other than more function gate definitions) forming the body of the function gate.
+  & These are the same directives from IR0 as allowed by the \textit{gate set}. Additionally, IR1 directives may be used, except for more function gate declarations.
+  & Gate directives may assign to wires $\asTemplate{in} + \asTemplate{out}$ or higher to create wires local to the subcircuit.\\
+  \hline
+\end{tabularx}
+
+\subsubsection*{Function Gate Invocation}\label{function_invoke_overview}
+A function gate may be invoked as follows.
+An invocation may occur within the top-level circuit, or within a subcircuit.
+Note however, if a function-gate is invoked from within a function-gate, it must have been declared lexically ahead of the current one, specifically preventing direct or indirect recursion.\\
+
+\begin{lstlisting}
+#\asTemplate{out-list}# <- @call(#\asTemplate{name}#, #\asTemplate{in-list}#);
+\end{lstlisting}
+
+If a function gate has no inputs or no outputs, then the invocation may take one of the following forms.
+An invocation could also have no inputs and no output wires, presumably if it consumed from \texttt{@short\_witness} or \texttt{@instance} for input, and used \texttt{@assert\_zero} in lieu of output wires.\\
+
+\begin{lstlisting}
+@call(#\asTemplate{name}#, #\asTemplate{in-list}#);
+
+#\asTemplate{out-list}# <- @call(#\asTemplate{name}#);
+
+@call(#\asTemplate{name}#);
+\end{lstlisting}
+
+\subsubsection*{Function Gate Invocation Semantics}
+\noindent
+\begin{tabularx}{\textwidth}{|p{1.25in}|X|p{1.5in}|p{1.375in}|}
+  \hline
+  \textbf{Template\newline Expression}
+  & \textbf{Description}
+  & \textbf{Syntactic\newline Constraints}
+  & \textbf{Semantic\newline Constraints} \\
+  \hline
+  \asTemplate{name}
+  & The name of the function to be invoked.
+  & This is a C-like identifier, but may also use \texttt{.} or \texttt{::} for grouping similar functions.
+  & The name must have previously been used as a function gate declaration.\\
+  \hline
+  \asTemplate{out-list}
+  & A list of wires which will connect the output wires of the subcircuit.
+  & Must be a wire list, as described below.
+  & The number of wires in the list must be equal to the \asTemplate{out} parameter of the function gate declaration.
+  Each wire in the list must be distinct.
+  \newline\newline
+  The wires in this list must not have previously been assigned.
+  These wires will be assigned after the invocation.\\
+  \hline
+  \asTemplate{in-list}
+  & A list of wires which will connect the output wires of the subcircuit.
+  & Must be a wire list, as described below.
+  & The number of wires in the list must be equal to the \asTemplate{in} parameter of the function gate declaration.
+  Wires in this list may be duplicates, although this is not recommended.
+  \newline\newline
+  The wires in this list must have previously been assigned.\\
+  \hline
+\end{tabularx}
+
+The wire list syntax used for \asTemplate{out-list} and \asTemplate{in-list} are lists of either single indexes or index ranges.
+Multiple indexes and index ranges may be separated by commas.
+
+\begin{description}[labelindent=0.375in]
+    \item[Single] \texttt{\$\asTemplate{x}}, where \asTemplate{x} is an integer literal.
+    The wire list will contain the wire \asTemplate{x}.
+    \item[Range] \texttt{\$\asTemplate{x}...\$\asTemplate{y}}, where \asTemplate{x} and \asTemplate{y} are integer literals.
+    The wire list will contain every wire between \asTemplate{x} and \asTemplate{y} (inclusive).
+\end{description}
+
+\subsubsection*{Function Gate Invocation Example}
+This example demonstrates a simple function gate computing the sum of four inputs.
+
+\begin{lstlisting}
+version 1.0.0;
+field characteristic 97 degree 1;
+relation
+gate_set: arithmetic;
+features: @function;
+@begin
+  @function(add_4, @out: 1, @in: 4,
+      @instance: 0, @short_witness: 0)
+    $5 <- @add($1, $2);
+    $6 <- @add($3, $4);
+    $0 <- @add($5, $6);
+  @end
+
+  $0 <- @short_witness;
+  $1 <- @instance;
+  $2 <- @short_witness;
+  $3 <- @instance;
+  $4 <- @call(add_4, $0...$3);
+  @assert_zero($4);
+@end
+\end{lstlisting}
+
+\subsubsection*{Anonymous Invocations}
+An anonymous invocation declares an unnamed function gate, and invokes it in the same directive.
+It has the following form.\\
+
+\begin{lstlisting}
+#\asTemplate{out-list}# <- @anon_call(#\asTemplate{in-list}#,
+    @instance: #\asTemplate{n\_instance}#, @short_witness: #\asTemplate{n\_s\_witness}#)
+  #\asTemplate{directives}\asRepeat#
+@end
+\end{lstlisting}
+
+Just like a named function invocation, an anonymous function may have no inputs or no outputs.
+
+\begin{lstlisting}
+@anon_call(#\asTemplate{in-list}#, @instance: #\asTemplate{n\_instance}#,
+    @short_witness: #\asTemplate{n\_s\_witness}#)
+  #\asTemplate{directives}\asRepeat#
+@end
+
+#\asTemplate{out-list}# <- @anon_call(@instance: #\asTemplate{n\_instance}#,
+    @short_witness: #\asTemplate{n\_s\_witness}#)
+  #\asTemplate{directives}\asRepeat#
+@end
+
+@anon_call(@instance: #\asTemplate{n\_instance}#, @short_witness: #\asTemplate{n\_s\_witness}#)
+  #\asTemplate{directives}\asRepeat#
+@end
+\end{lstlisting}
+
+The following template expressions are related to those of the Function Gate Declaration (\ref{function_declare_overview}) or Function Gate Invocation (\ref{function_invoke_overview}).
+
+\noindent
+\begin{tabularx}{\textwidth}{|p{1.5in}|X|}
+  \hline
+  \textbf{Template\newline Expression} & \textbf{Explanation} \\
+  \hline
+  \asTemplate{name} & The \asTemplate{name} is not used by an anonymous invocation. \\
+  \hline
+  \asTemplate{out}, \asTemplate{in} & These template expressions of a Declaration are replaced with the length of the \asTemplate{out-list} and \asTemplate{in-list} wire lists. \\
+  \hline
+  \asTemplate{n\_instance}, \asTemplate{n\_s\_witness} & These have the same usage in a Declaration and an Anonymous Invocation. \\
+  \hline
+  \asTemplate{directives}\asRepeat & This has the same usage in  a Declaration and an Anonymous Invocation. \\
+  \hline
+  \asTemplate{out-list} \asTemplate{in-list} & These have the same usage in an Invocation and an Anonymous Invocation. \\
+  \hline
+\end{tabularx}
+
+\subsubsection*{Anonymous Invocation Example}
+This example demonstrates an anonymous function computing the sum of four inputs.
+
+\begin{lstlisting}
+version 1.0.0;
+field characteristic 97 degree 1;
+relation
+gate_set: arithmetic;
+features: @function;
+@begin
+  $0 <- @short_witness;
+  $1 <- @instance;
+  $2 <- @short_witness;
+  $3 <- @instance;
+  $4 <- @anon_call($0...$3, @instance: 0, @short_witness: 0)
+    $5 <- @add($1, $2);
+    $6 <- @add($3, $4);
+    $0 <- @add($5, $6);
+  @end
+  @assert_zero($4);
+@end
+\end{lstlisting}
+
+\subsection{Relation Overview: For Loops}\label{loop_overview}
+A for loop repeats the invocation of a function gate.
+The invocation may be anonymous, but this is not required.
+It has the following form.\\
+
+Should a backend wish not to support for loops directly a procedure for ``unrolling'' a loop is described in section \ref{unrolling}.\\
+
+\begin{lstlisting}
+#\asTemplate{assign-list}# <- @for #\asTemplate{iterator}# @first #\asTemplate{first}# @last #\asTemplate{last}#
+  #\asTemplate{invocation}#
+@end
+\end{lstlisting}
+
+A for loop may omit the \asTemplate{assign-list} so long as its \asTemplate{invocation} has no output wires. In this case the \asTemplate{invocation} must also not have an \asTemplate{out-list}.\\
+
+\begin{lstlisting}
+@for #\asTemplate{iterator}# @first #\asTemplate{first}# @last #\asTemplate{last}#
+  #\asTemplate{invocation}#
+@end
+\end{lstlisting}
+
+\subsubsection*{For Loop Semantics}
+
+\begin{tabularx}{\textwidth}{|p{1.125in}|X|p{1.375in}|p{1.75in}|}
+  \hline
+  \textbf{Template\newline Expression}
+  & \textbf{Description}
+  & \textbf{Syntactic\newline Constraints} & \textbf{Semantic\newline Constraints} \\
+  \hline
+  \asTemplate{assign-list}
+  & A list of wires, in the scope containing the for loop, which are assigned by the for loop.
+  & The same wire list form as used by Function Gate Invocation (\ref{function_invoke_overview}).
+  & Before the loop, all wires in the list must be unassigned. After the loop all of them will have been assigned. \\
+  \hline
+  \asTemplate{iterator}, \asTemplate{first}, \asTemplate{last}
+  & These control the number of iterations of the loop.\newline\newline
+  \asTemplate{iterator} is a loop iterator (see below), while \asTemplate{first} and \asTemplate{last} are start and stop conditions.
+  & \asTemplate{iterator} is an identifier (see below).
+  \newline\newline
+  \asTemplate{first} and \asTemplate{last} may be iterator expressions (see below).
+  & \asTemplate{iterator} increments by one (1) on each iteration of the loop.\newline\newline
+  On the first iteration, \asTemplate{iterator} carries the value \asTemplate{first}, and on the last it carries the value \asTemplate{last}. \\
+   \hline
+  \asTemplate{invocation} (and transitively \asTemplate{out-list} and \asTemplate{in-list})
+  & This is a function gate invocation, anonymous or not.
+  & The wire indexes in the invocation's \asTemplate{out-list} and \asTemplate{in-list} may be replaced with iterator expressions (see below).
+  & The union of each iteration's \asTemplate{out-list} must form an equivalent set to the \asTemplate{assign-list}.
+  Each iteration's \asTemplate{out-list} must be distinct from that of each other iteration. \\
+  \hline
+\end{tabularx}
+
+\subsubsection*{Iterator Expressions}\label{overview-iterators}
+Iterator expressions enable the input and output wires of a function gate invocation to differ on each iteration of the loop.
+Each iterator expression is a simple arithmetic expressions using the loop \asTemplate{iterator}s of any lexically containing loop.
+The expressions replace wire indexes for the \asTemplate{invocation}'s inputs and outputs.
+An iterator expression can take one of the following forms, and represents the index of a wire, using integers between $0$ and $2^{64}-1$.
+Loop \asTemplate{iterator}s have lexical scope.
+Functionally, this means that on scope boundaries entering an anonymous function they are preserved, but entering a named function they are not.
+For further clarity refer to section \ref{for_loops_text}. \\
+
+\begin{itemize}
+    \item A numeric constant.
+    \item A ``loop iterator'', which refers to the value of a loops iteration counter.
+    Syntactically this is a C-style identifier, but may also use \texttt{.} or \texttt{::} for grouping similar functions. See Appendix \ref{textblocks} for details.
+    \item An expression of ``sub-expressions''. This takes the form \texttt{(\asTemplate{a} \asTemplate{op} \asTemplate{b})}. Where \asTemplate{a} and \asTemplate{b} are ``sub- expressions'', and \asTemplate{op} is one of the following operations.
+    The operations have wraparound behavior from $2^{64}-1$ to $0$.
+    \begin{itemize}
+        \item \texttt{+}: integer addition.
+        \item \texttt{-}: integer subtraction.
+        \item \texttt{*}: integer multiplication.
+    \end{itemize}
+    \item A division constant expression. This takes the form \texttt{\asTemplate{a} / \asTemplate{b}} where \asTemplate{a} is a ``sub-expression'' and \asTemplate{b} is a numeric constant. The result is the 64-bit unsigned integer quotient.
+\end{itemize}
+
+\subsubsection*{Examples}
+Here are a few example ``iterator-expressions'', as well an example of Fibonacci.
+Note that for Fibonacci, the ``$n$'' is a public constant (the bounds of the loop).
+
+\begin{itemize}
+    \item \texttt{\$123} is the exact wire.
+    \item \texttt{\$i} or \texttt{\$(i + 123)} indexes an ``array'' within a for-loop.
+    \item \texttt{\$((i * 10) + j)}  indexes a ``square array'' within a pair of for-loops.
+\end{itemize}
+
+\begin{lstlisting}
+$2...$10 <- @for i @first 2 @last 10
+  $i <- @anon_call($(i - 1), $(i - 2),
+      @instance: 0, @short_witness: 0)
+    $0 <- @add($1, $2);
+  @end
+@end
+\end{lstlisting}
+
+To clarify lexical \asTemplate{iterator} scoping consider the following two example nested loop excerpts.
+The first nests using anonymous functions for the outer loop body.
+The second uses a named function, and because some of the inner loop's iterator expressions use the outer loop's iterator, an error is caused.\\
+
+\begin{lstlisting}
+ /* ... */ <- @for i @first 0 @last 10
+   /* ... */ <- @anon_call(/* ... */)
+     @for j @first 0 @last 10
+       $((i * 10) + j) <- @anon_call(/* ... */)
+         /* ... */
+       @end
+   @end
+ @end
+\end{lstlisting}
+
+The equivalent using named functions is however erroneous.\\
+
+\begin{lstlisting}
+@function(foo, /* ... */)
+  /* ... */ <- @for j @first 0 @last 10
+    $((i * 10) + j) <- @anon_call(/* ... */) // #{\color{red} Error}#
+      /* ... */
+    @end
+  @end
+@end
+
+/* ... */ <- @for i @first 0 @last 10
+  /* ... */ <- @call(foo, /* ... */)
+@end
+\end{lstlisting}
+
+\subsection{Relation Overview: Switch-Case Statements}\label{switch_overview}
+The switch-case directive grants the IR the capability to evaluate branches, as is ubiquitous in conventional computing.
+However, in order to protect the the short witness, performance characteristics cannot always be mirrored.
+If the length or structure of one branch differs from other branches, then the verifier could use such information to learn about the witness.
+Thus, every branch is processed, and only the result of the matching branch is chosen as the ``selected'' result. \\
+
+Should a backend wish not to support a switch-case directly, a procedure for conversion to a selection circuit, or ``multiplexing'', is described in section \ref{multiplexing}.\\
+
+\begin{lstlisting}
+#\asTemplate{assign-list}# <- @switch ( $#\asTemplate{condition}# )
+  @case < #\asTemplate{case}# > : #\asTemplate{invocation}# 
+  @case < #\asTemplate{case}# > : #\asTemplate{invocation}# 
+  @case < #\asTemplate{case}# > : #\asTemplate{invocation}# 
+  #\asRepeat#
+@end
+\end{lstlisting}
+
+
+
+\subsubsection*{Switch-Case Semantics}
+The \asTemplate{condition} is the wire index of an assigned wire, whose value is matched against each \asTemplate{case}.
+Where the \asTemplate{condition}'s value matches a \asTemplate{case}, the corresponding \asTemplate{invocation}'s assignments are kept as the \asTemplate{assign-list}'s assignments.\\
+
+If any two \asTemplate{case}s have the same value, then the relation is semantically invalid.
+If the \asTemplate{condition} does not match any \asTemplate{case}, the witnessed statement is invalid.\\
+
+\begin{tabularx}{\textwidth}{|p{1.125in}|X|p{1.375in}|p{1.75in}|}
+  \hline
+  \textbf{Template\newline Expression}
+  & \textbf{Description}
+  & \textbf{Syntactic\newline Constraints} & \textbf{Semantic\newline Constraints} \\
+  \hline
+  \asTemplate{assign-list}
+  & A list of wires, in the scope containing the switch-case, which are assigned by the switch-case.
+  & The same wire list form as used by Function Gate Invocation (\ref{function_invoke_overview}).
+  & Before the switch-case, all wires in the list must be unassigned. Afterwards all of them will have been assigned. \\
+  \hline
+  \asTemplate{condition}, \asTemplate{case}
+  & These select the ``selected'' case of the switch-case statement.
+  & The \asTemplate{condition} is a wire-number, prefixed by \texttt{\$}, and in the range of $0$ through $2^{63}-1$.\newline
+  \newline
+  Each \asTemplate{case} is a field element, delimited with \texttt{<} and \texttt{>}.
+  & The \asTemplate{condition} must have been previously assigned, and each \asTemplate{case} must be in the range of $0$ through $p-1$.
+  No \asTemplate{case} may be duplicated within a same switch-case.\newline
+  \newline
+  If the \asTemplate{condition}'s value is not matched by a case, this is an \textit{evaluation invalidity}.
+  \\
+   \hline
+  \asTemplate{invocation} (and transitively \asTemplate{out-list}, \asTemplate{in-list}, and \asTemplate{directives})
+  & Each case is backed by a function gate invocation, either named or anonymous.
+  & The \asTemplate{out-list} and \texttt{<-} are omitted from each invocation, otherwise, these are syntactically identical to a named or anonymous function-gate invocation.
+  & The \asTemplate{assign-list} must have the same length as the \asTemplate{out-list} would have.
+  The ``selected'' case's \asTemplate{out-list} is replaced with the \asTemplate{assign-list}, while each other case's \asTemplate{out-list} is replaced with wires which can be considered discarded.\newline
+  \newline
+  A \asTemplate{directive} which has side-effects must have special meaning described in subsection \ref{switch_side_effects_overview}.
+  \\
+  \hline
+\end{tabularx}
+
+\subsubsection*{Side-Effect Directives in a Switch-Case Statement}\label{switch_side_effects_overview}
+As certain directives have effects other than assignment of wires, their semantics within a switch-case must be modified.
+Specifically \texttt{@assert\_zero} and the input directives, \texttt{@instance} and \texttt{@short\_witness}, have altered semantics.\\
+
+The \texttt{@assert\_zero} directive causes an \textit{evaluation invalidity} if its given wire does not carry the value zero (0).
+This effect is undesirable in non-selected cases, thus the effect is disabled in the body of each case, except the selected case. \\
+
+The input directives (\texttt{@instance} and \texttt{@short\_witness}) cause streams to be advanced on each occurrence, and each branch might use a different number of inputs.
+If the IR were to match exactly the expectation of conventional branching, then differing stream consumption counts could reveal the switch condition, breaking zero-knowledge.
+However, if the IR were to trace each branch and consume every input on each branch, this could be wasteful and preclude certain interesting optimizations.
+Instead, the totality of the switch-case must consume the maximum number of inputs regardless of which case.
+This could be implemented by duplicating the stream before each case (demonstrated by the reference semantics in subsection \ref{switch_case_text}), rewinding between cases, or replacing input directives with function-gate inputs (outlined in subsection \ref{multiplexing}).
+Note that due to ``maximum consumption'', regardless of which case is selected, the overall stream length does not vary with case selections.\\
+
+Using the ``maximum consumption'' may seem to produce nonsensical values in non-selected cases.
+This is allowable, because the nonsensical values are ignored as both function gate outputs and as \texttt{@assert\_zero} inputs.\\
+
+It is worth mentioning that that there may be up to $p-1$ unique cases within a switch.
+In some cases it may be undesirable, impractical, or impossible to enumerate each case of the switch-case.
+This leaves open the possibility for a witnessed-statement to have a switch-case statement with out a selected branch.
+This possibility is defined as a witnessed-statement invalidity, meaning that backends must be careful to avoid malicious behavior.\\
+
+\subsubsection*{Example}
+This function implements a vectorized/simd style private arithmetic operation, with trivial encoding: $0 \rightarrow mul$, $1 \rightarrow add$. Here the logic is fully unrolled for practicality due to the brevity of the implicit loop. Input vectors are stored in wires \$1...\$4 and \$5..\$8.\\
+
+\begin{lstlisting}
+ $9...$12 <- @switch ($0)
+    @case <0>:
+        @anon_call($1...$8,@instance:0,@short_witness:0)
+        $0 <- @mul($4, $8)
+        $1 <- @mul($5, $9)
+        $2 <- @mul($6, $10)
+        $3 <- @mul($7, $11)
+        @end
+    @case <1>:
+        @anon_call($1...$8,@instance:0,@short_witness:0)
+        $0 <- @add($4, $8)
+        $1 <- @add($5, $9)
+        $2 <- @add($6, $10)
+        $3 <- @add($7, $11)
+        @end
+ @end
+\end{lstlisting}
+
+\subsection{Supporting additional Syntax}
+
+In the following sections \ref{text} and \ref{binary}, we concretely specify the two syntax serializations so that proposed features or tradeoffs can be more easily expressed in a rigorous manner.

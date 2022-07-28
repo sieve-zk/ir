@@ -1,0 +1,1608 @@
+\newpage
+\section{Textual Serialization and Authoritative Semantics}\label{text}
+
+\newcommand{\synFrag}[1]{{\color{SyntaxGreen}\texttt{#1}}}
+\newcommand{\semFrag}[1]{{\color{SemanticPurple}\texttt{#1}}}
+\newcommand{\synNonterm}[1]{\synFrag{$\langle$#1$\rangle$}}
+\newcommand{\semNonterm}[1]{\semFrag{$\langle$#1$\rangle$}}
+\newcommand{\semGlobal}[1]{\textit{\semFrag{#1}}}
+
+\newcommand{\synNontermN}[2]{\synFrag{$\langle$#1$_{#2}\rangle$}}
+\newcommand{\semNontermN}[2]{\semFrag{$\langle$#1$_{#2}\rangle$}}
+
+\newcommand{\ttSyn}{\color{SyntaxGreen}}
+\newcommand{\ttSem}{\color{SemanticPurple}}
+\newcommand{\ttNonterm}[1]{\(\langle\)#1\(\rangle\)}
+\newcommand{\ttNontermN}[2]{\(\langle\)#1\(\sb{#2}\rangle\)}
+\newcommand{\ttGlobal}[1]{\textit{#1}}
+
+The textual serialization and exact semantics of IR0 are described here using Extended BNF Grammar, \href{https://en.wikipedia.org/wiki/Attribute_grammar}{Donald Knuth's Attribute Grammar concept}, and clarifying comments and section headers.
+\synFrag{Green text} notates syntax in EBNF, and \semFrag{purple text} notates semantics, using pseudo code to assign and evaluate grammatical attributes.
+In some cases, where pseudo code both produces \textit{inherited} attributes and requires \textit{synthesized} attributes of a sub-element, a \semFrag{process(\semNontermN{element}{n});} directive indicates when the sub-element produces its \textit{synthesized} attributes.\\
+
+The \semFrag{purple} semantic sections are split into two subsections, one for checking \textit{resource validity} of an individual resource, the other for checking \textit{evaluation validity} or evaluating the circuit.
+The \textit{resource validity} subsections are surrounded by \semFrag{resource \{ ... \}} blocks, and the \textit{evaluation validity} subsections by \semFrag{evaluation \{ ... \}} blocks.
+In each, a \semFrag{fail\_if(condition)} pseudo function indicates a condition which could render the syntax element invalid.
+The \semFrag{resource} subsection should be considered a prerequisite of the \semFrag{evaluation} subsection, thus to fully evaluate a circuit, one would concatenate the two subsections.\\
+
+Throughout this section, \synNonterm{wire-number}, \synNonterm{field-literal}, and \synNonterm{label} elements will be referenced.
+They are defined in Appendix \ref{textblocks}.
+Syntactically, a \synNonterm{wire-number} is a number prefixed with a \synFrag{\$}, for example \texttt{\$123}.
+The \synNonterm{wire-number} must be in the range of $0$ through $2^{64} - 1$, although with certain features enabled, wires $2^{63}$ through $2^{64} - 1$ are reserved as ``ephemeral wires'' for used by a backend as needed.
+Semantically, a \semNonterm{wire-number} names a wire and is the index into the \semGlobal{wires} list.
+A \synNonterm{field-literal} is the literal form of a field element.
+These are notated by a number surrounded by angle brackets, for example \texttt{< 456 >}.
+The number must be a member of $GF(p)$ defined by prime $p$ given in the header.
+a \synNonterm{label} is a C-style identifier used to label elements of the program state other than wires.
+Concrete definitions for \synNonterm{wire-number}, \synNonterm{field-literal}, and \synNonterm{label} elements are given in Appendix \ref{textblocks}: \nameref{textblocks}, along with syntax for comments which are ignored.\\
+
+\subsection{Resource Header}\label{header_text}
+The header is the first element of the IR.
+All resources share the same header.
+It declares just a version number and the computation field.\\
+
+\begin{alltt}\ttSyn
+  \ttNonterm{header} ::=
+             \ttNonterm{version-decl}
+             \ttNonterm{field-decl}
+\end{alltt}
+
+The version number is given using the Major.Minor.Patch form from \href{https://semver.org/}{semantic versioning}.
+It must match one of the versions listed in the IR's \nameref{history}.
+Embedding a version number into the IR enables tooling to quickly warn the user when unsupported features may be present.
+Semantically, the version is largely unimportant other than in for checking consistency across resources. \\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{version-decl}{0} ::= `version' \ttNontermN{decimal-literal}{0}
+                   `.' \ttNontermN{decimal-literal}{1}
+                   `.' \ttNontermN{decimal-literal}{2} `;'\ttSem
+  resource \{
+    \ttGlobal{Version}.major := \ttNontermN{decimal-literal}{1}.value;
+    \ttGlobal{Version}.minor := \ttNontermN{decimal-literal}{2}.value;
+    \ttGlobal{Version}.patch := \ttNontermN{decimal-literal}{3}.value;
+  \}
+\end{alltt}
+
+The field declaration introduces a global variable which is used to validate field elements.
+The \semGlobal{p} variable is a prime modulus, or the field's characteristic.
+Although the field degree is required, it is fixed at 1.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{field-decl}{0} ::= `field'
+                  `characteristic' \ttNontermN{numeric-literal}{1}
+                  `degree' \ttNontermN{numeric-literal}{2} `;'\ttSem
+  resource \{
+    \ttGlobal{p} := \ttNontermN{numeric-literal}{1}.value;
+    fail_if(\ttNontermN{numeric-literal}{2}.value != 1);
+    fail_if(!is_prime(\ttGlobal{p}));
+  \}
+\end{alltt}
+
+\subsection{Instance and Short Witness}\label{ins_wit_text}
+The instance and witness resources provide streams of field elements which are consumed by directives of the relation.
+Each is similarly structured as a simple list of field elements.
+Abstractly, each stream is modeled as a ``first-in-first-out'' queue data structure.
+The \semGlobal{instance} and \semGlobal{shortWitness} queues/streams will be inherited attributes of the relation's directives. \\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{instance}{0} ::= \ttNonterm{header}
+                 `instance' `@begin'
+                   [ \ttNontermN{field-literal}{1...n} `;' ]*
+                 `@end'\ttSem
+  resource \{
+    for i from 1 to n \{
+      fail_if(\ttGlobal{p} <= \ttNontermN{field-literal}{i}.value);
+    \}
+  \}
+  evaluation \{
+    for i from 1 to n \{
+      \ttGlobal{instance}.put(\ttNontermN{field-literal}{i}.value);
+    \}
+  \}\ttSyn
+
+  \ttNontermN{short-witness}{0} ::= \ttNonterm{header}
+                      `short_witness' `@begin'
+                        [ \ttNontermN{field-literal}{1...n} `;' ]*
+                      `@end'\ttSem
+  resource \{
+    for i from 1 to n \{
+      fail_if(\ttGlobal{p} <= \ttNontermN{field-literal}{i}.value);
+    \}
+  \}
+  evaluation \{
+    for i from 1 to n \{
+      \ttGlobal{shortWitness}.put(\ttNontermN{field-literal}{i}.value);
+    \}
+  \}
+\end{alltt}
+
+\subsection{Circuit State}\label{state_text}
+During \textit{resource} and \textit{evaluation validity} the circuit carries a state, and each directive modifies the state.
+Some elements of the state are used in both \textit{resource} and \textit{evaluation validity} phases, some only during one of the phases.
+The primary element of the program state is the \semGlobal{wires} set described in subsection \ref{wireset_text}
+The \semGlobal{wires} set is used in both \textit{resource} and \textit{evaluation validity} phases.
+In addition, an \semGlobal{iterators} map tracks the for-loop iterators (see subsection \ref{for_loops_text}) which are lexically in scope, along with their current values.
+These are bundled into a \semGlobal{state} object will be passed through directives as an inherited attribute.\\
+
+\begin{alltt}\ttSem
+  struct state \{
+    wireset \ttGlobal{wires};
+    map \ttGlobal{iterators};
+\end{alltt}
+
+During the \textit{evaluation validity} phase, the instance and short witness input streams are added to the state.
+These are not available during \textit{resource validation}, because this phase occurs independently for each resource.
+The \textit{evaluation validity} phase also requires a flag indicating if the current circuit element is part of a switch statement's inactive case, it is normally \texttt{true}, and \texttt{false} when within the inactive case.\\
+
+\begin{alltt}\ttSem
+    stream \ttGlobal{instance};
+    stream \ttGlobal{shortWitness};
+    bool \ttGlobal{switchActive};
+  \}
+\end{alltt}
+
+\subsubsection{Wires Set}\label{wireset_text}
+
+The the \semGlobal{wires} set keeps the circuit's active wires in a sparse list.
+Generally speaking, wires may be inserted, retrieved, and removed in any order, with the following restrictions.  
+\begin{itemize}
+  \item Once a wire is inserted, it may not be replaced, even after it has been removed (single static assignment).
+  \item A wire may be retrieved or removed only after it has been inserted (topological ordering).
+  \item After being removed, a wire may not be retrieved or removed again.
+\end{itemize}
+
+Scoping mechanics allow a ``containing scope'' to map wires into a ``sub scope''.
+When a new scope is opened, a new \semGlobal{wires} set object is created and wires are mapped from the containing scope into the sub scope as either outputs or inputs.
+In addition to these input and output wires, a scope may have local wires.
+\begin{description}[labelindent=0.375in]
+    \item[Input] Previously assigned wires of a containing scope which may be used as inputs to a directive.
+    \item[Output] Unassigned wires of a containing scope which may be first assigned as outputs of a directive.
+    After the scope closes, the containing scope may use these wires as inputs to a directive, as may the sub scope after the initial assignment.
+    \item[Local] wires assigned within a scope which are not its output.
+    Once the scope closes, these wires become inaccessible.
+\end{description}
+
+Here we will define an abstract datatype for the \semGlobal{wires} set.
+A single wire is represented as the field element value which it carries along with some flags to indicate its lifetime.\\
+
+\begin{alltt}\ttSem
+struct wire \{
+  bool assigned;
+  bool deleted;
+  field_element value;
+\}
+\end{alltt}
+
+A \semFrag{wireset} encapsulates the scoping rules previously described.
+It is a mapping from indexes to wires.
+All index arithmetic is performed using unsigned 64-bit integer logic with wraparound from $2^{64}-1$ to $0$ and reverse.
+There are two contiguous lists output wires and then input wires mapped from higher scopes as referenced objects.
+Wires with higher indexes than the inputs and outputs are local wires.
+Their storage and retrieval are modeled with a map data type to allow for discontinuities.
+Implementations are encouraged to come up with alternate representations, so long as the \semFrag{wireset}'s behavior is equivalent.\\
+
+
+\begin{alltt}\ttSem
+class wireset \{
+  list<wire> outputs;
+  list<wire> inputs;
+  map<uint64 : wire> locals;
+
+  wire findIndex(uint64 index) \{
+    if(index < outputs.size) \{
+      return outputs[index];
+    \}
+    else if(index < outputs.size + inputs.size) \{
+      return inputs[index - outputs.size];
+    \}
+    else if(locals.has(index - (outputs.size + inputs.size))) \{
+      return locals.get(index - (outputs.size + inputs.size));
+    \}
+    else \{
+      return null;
+    \}
+  \}
+\end{alltt}
+
+The following operations for insertion and retrieval which may seem atomic are split due to distinct \semFrag{resource} and \semFrag{evaluation} validity phases.
+Remember, the \textit{resource validity} phase should be considered a prerequisite for the \textit{evaluation validity} phase.
+
+\begin{alltt}\ttSem
+  void retrieveResource(uint64 index) \{
+    wire w = findIndex(index);
+    fail_if(w == null);
+    fail_if(w.deleted || !w.assigned);
+  \}
+
+  field_element retrieveEvaluation(uint64 index) \{
+    wire w = findIndex(index);
+    return w.value;
+  \}
+  
+  void insertResource(uint64 index) \{
+    if(index < outputs.size) \{
+      fail_if(outputs[index] == null);
+      fail_if(outputs[index].assigned);
+      outputs[index].assigned = true;
+    \}
+    else \{
+      fail_if(index < outputs.size + inputs.size);
+      fail_if(locals.has(index - (outputs.size + inputs.size)));
+      
+      locals.put(index - (outputs.size + inputs.size),
+        wire(assigned := true, deleted := false, value := null);
+    \}
+  \}
+
+  void insertEvaluation(uint64 index, field_element value) \{
+    wire w = findIndex(index);
+    w.value = value;
+  \}
+\end{alltt}
+
+The remove operation is only performed during the \textit{resource validity} phase.
+Removal capabilities are also limited only to local wires.
+Note, to make explicit that deleted wires may not have their indexes reused, they are simply marked as unused, indicating that they may not be reused.
+This is done only for clarity of specification; implementations are encouraged to come up with alternate methods of enforcement.
+
+\begin{alltt}\ttSem
+  void remove(uint64 index) \{
+    fail_if(index < output.size + input.size);
+    fail_if(!locals.has(index - (output.size + input.size));
+    wire w = locals.get(index - (output.size + input.size));
+    fail_if(w.deleted || !w.assigned);
+    w.deleted = true;
+  \}
+\end{alltt}
+
+The following methods are used when remapping wires from a containing scope to sub scope, and take action during the \textit{resource validity} phase.
+Consider them to be methods of the containing scope, with the sub scope as parameters.
+These are operations of the \textit{resource validity} phase.
+Mapping additional wires into a sub scope after local wires have been assigned may throw off indexing, and is thus considered erroneous; no syntax to do so is provided, so this may also be a redundant check.
+
+\begin{alltt}\ttSem
+  void remapInput(index, wireset subScope) \{
+    fail_if(subScope.locals.size != 0);
+
+    wire w = findIndex(index);
+    fail_if(w == null);
+    fail_if(w.deleted || !w.assigned);
+    
+    subScope.inputs.append(w);
+  \}
+
+  void remapOutput(index, wireset subScope) \{
+    fail_if(subScope.locals.size != 0);
+
+    insertResource(index);
+
+    wire w = findIndex(index);
+    w.assigned = false;
+    
+    subScope.outputs.append(w);
+  \}
+
+\end{alltt}
+
+To process all cases of a switch-case statement, and choose the correct result, we use this method for mapping ``dummy'' outputs wires into a sub-scope (during the \textit{resource validity} phase) and later copying a ``dummy'' wire onto an actual output wire (shown in section \ref{switch_case_text}).\\
+
+\begin{alltt}\ttSem
+  void mapDummies(count) \{
+    fail_if(outputs.size != 0);
+
+    for i from 0 to count \{
+      outputs.append(
+        wire(assigned := false, deleted := false, value := null));
+    \}
+  \}
+\}
+\end{alltt}
+
+Within later subsections, the \semFrag{\_\_Resource} methods will assure that single static assignment and topological ordering are respected before the \semFrag{\_\_Evaluation} methods perform an action.
+\\
+
+\subsubsection{Global State}
+In addition to the \semGlobal{state} attribute, there are a few global variables which carry program state.
+Notably \semGlobal{FunctionsMap} retrieves a function definition, given its name.
+The \semGlobal{p} prime also defines the field of computation.
+Additional global variables are be declared for feature toggles, etc.\\
+
+Most global variables are limited to a single resource.
+However, the global variables \semGlobal{Version} and \semGlobal{p} are declared in the header which is duplicated across resources.
+Before the \semFrag{evaluation} phase, their equivalence across resources must be checked for them to have \textit{evaluation validity}.\\
+
+\begin{alltt}
+  evaluation \{
+    fail_if(relation.\ttGlobal{Version} != instance.\ttGlobal{Version}
+    || relation.\ttGlobal{Version} != short_witness.\ttGlobal{Version});
+    fail_if(relation.\ttGlobal{p} != instance.\ttGlobal{p}
+      || relation.\ttGlobal{p} != short_witness.\ttGlobal{p});
+  \}
+\end{alltt}
+
+\subsection{Relation: Structure, Gate Set, and Feature Toggles}\label{structure_text}
+\subsubsection*{Relation Structure}
+The relation lists directives, collectively forming a circuit.
+The relation begins with a \synNonterm{header}, the \textit{gate set} the \textit{feature toggles}, function-gate definitions (if enabled), and finally the circuit body.
+function-gate definitions will be described in section \ref{function_gate_text}, and the circuit's body is a list of directives, described later in this section.
+Shown here also is setup for the \semGlobal{state} attribute.\\
+
+\begin{alltt}\ttSyn
+  \ttNonterm{relation} ::= \ttNonterm{header} `relation'
+                 \ttNonterm{gate-set} \ttNonterm{feature-toggles}
+                 `@begin'
+                   [ \ttNonterm{function-declare} ]*
+                   \ttNontermN{directive-list}{0}
+                 `@end'\ttSem
+  resource \{
+    \ttNontermN{directive-list}{0}.\ttGlobal{state}.\ttGlobal{wires} = wireset();
+    \ttNontermN{directive-list}{0}.\ttGlobal{state}.\ttGlobal{iterators} = map();
+  \}
+  evaluation \{
+    \ttNontermN{directive-list}{0}.\ttGlobal{state}.\ttGlobal{instance} =
+      /* The instance resource */;
+    \ttNontermN{directive-list}{0}.\ttGlobal{state}.\ttGlobal{shortWitness} =
+      /* The short witness resource */;
+    \ttNontermN{directive-list}{0}.\ttGlobal{state}.\ttGlobal{switchActive} = true;
+  \}
+\end{alltt}
+
+
+\subsubsection*{Gate Set}
+The \textit{gate set} controls which gates/computations are available in a circuit.
+Canonically, a gate set may be one of \synFrag{boolean} (consisting of \synFrag{@and}, \synFrag{@xor}, and \synFrag{@not} gates) or \synFrag{arithmetic} (consisting of \synFrag{@mul}, \synFrag{@mulc}, \synFrag{@add}, and \synFrag{@addc} gates).
+The \textit{gate set} defines global flags which guard usage of gate-directives in later \\
+
+\begin{alltt}\ttSyn
+  \ttNonterm{gate-set} ::= `gate_set' `:' [ `boolean' | `arithmetic' ] `;'\ttSem
+  resource \{
+    match \{
+      case `boolean' : \{
+        \ttGlobal{EnableAdd} := false;
+        \ttGlobal{EnableAddC} := false;
+        \ttGlobal{EnableMul} := false;
+        \ttGlobal{EnableMulC} := false;
+
+        \ttGlobal{EnableAnd} := true;
+        \ttGlobal{EnableNot} := true;
+        \ttGlobal{EnableXor} := true;
+      \}
+      case `arithmetic' : \{
+        \ttGlobal{EnableAdd} := true;
+        \ttGlobal{EnableAddC} := true;
+        \ttGlobal{EnableMul} := true;
+        \ttGlobal{EnableMulC} := true;
+
+        \ttGlobal{EnableAnd} := false;
+        \ttGlobal{EnableNot} := false;
+        \ttGlobal{EnableXor} := false;
+      \}
+    \}
+  \}
+\end{alltt}
+
+Additionally \textit{partial gate sets} are allowed to forbid certain gates from one of the \textit{canonical gate sets}.
+To create a \textit{partial gate set}, the \textit{gate set's} value is replaced with a list of all remaining allowed gates.
+The ability to form \textit{partial gate sets} does not imply that a circuit must use every gate in its \textit{gate set}.\\
+
+\begin{alltt}\ttSyn
+  \ttNonterm{arithmetic-gate-name} ::= `@add' | `@addc' | `@mul' | `@mulc'
+  \ttNonterm{gate-set} ::= `gate_set' `:'
+               \ttNontermN{arithmetic-gate-name}{1} [ `,' \ttNontermN{arithmetic-gate-name}{2...n} ]* `;'\ttSem
+  resource \{
+    \ttGlobal{EnableAdd} := false;
+    \ttGlobal{EnableAddC} := false;
+    \ttGlobal{EnableMul} := false;
+    \ttGlobal{EnableMulC} := false;
+
+    \ttGlobal{EnableAnd} := false;
+    \ttGlobal{EnableNot} := false;
+    \ttGlobal{EnableXor} := false;
+
+    for i from 1 to n \{
+      match(\ttNontermN{arithmetic-gate-name}{i}) \{
+        `@and' : \{ \ttGlobal{EnableAnd} := true; \}
+        `@not' : \{ \ttGlobal{EnableNot} := true; \}
+        `@xor' : \{ \ttGlobal{EnableXor} := true; \}
+      \}
+    \}
+  \}\ttSyn
+
+  \ttNonterm{boolean-gate-name} ::= `@and' | `@not' | `@xor'
+  \ttNonterm{gate-set} ::= `gate_set' `:'
+               \ttNontermN{boolean-gate-name}{1} [ `,' \ttNontermN{boolean-gate-name}{2...n} ]* `;'\ttSem
+  resource \{
+    \ttGlobal{EnableAdd} := false;
+    \ttGlobal{EnableAddC} := false;
+    \ttGlobal{EnableMul} := false;
+    \ttGlobal{EnableMulC} := false;
+
+    \ttGlobal{EnableAnd} := false;
+    \ttGlobal{EnableNot} := false;
+    \ttGlobal{EnableXor} := false;
+
+    for i from 1 to n \{
+      match(\ttNontermN{boolean-gate-name}{i}) \{
+        `@add'  : \{ \ttGlobal{EnableAdd} := true; \}
+        `@addc' : \{ \ttGlobal{EnableAddC} := true; \}
+        `@mul'  : \{ \ttGlobal{EnableMul} := true; \}
+        `@mulc' : \{ \ttGlobal{EnableMulC} := true; \}
+      \}
+    \}
+  \}\ttSyn
+\end{alltt}
+
+\subsubsection*{Feature Toggles}
+Feature toggles control the usage of features beyond simple gate directives.
+Syntactically the toggles form a list of enabled features, if none are desired \synFrag{simple} should be used instead.
+Each toggle creates a global variable indicating if the feature may be used.
+In later subsections, usage of these features will be guarded by global flags defined here.
+Note that for loops and switch-case statements depend on function gates.
+In the case that either for loops or switch-case statements are enabled but function gates are not, then a single anonymous function will be allowed as the body of each for loop or case block.\\
+
+In the case that a backend does not wish to support one of the features directly, procedures for ``flattening'' each to a equivalent circuit, without the feature, are given in section \ref{flattening}.
+
+\begin{alltt}\ttSyn
+  \ttNonterm{feature-name} ::= `@function' | `@for' | `@switch'
+  \ttNonterm{feature-toggles} ::= `features' `:'
+                      \ttNontermN{feature-name}{1} [ `,' \ttNontermN{feature-name}{2...n} ]*  `;'\ttSem
+  resource \{
+    \ttGlobal{FunctionToggle} := false;
+    \ttGlobal{ForLoopToggle} := false;
+    \ttGlobal{SwitchCaseToggle} := false;
+    for i from 1 to n \{
+      match(\ttNontermN{feature-names}{i}) \{
+        `@function': \{ \ttGlobal{FunctionToggle} := true; \}
+        `@for':      \{ \ttGlobal{ForLoopToggle} := true; \}
+        `@switch':   \{ \ttGlobal{SwitchCaseToggle} := true; \}
+      \}
+    \}
+  \}\ttSyn
+
+  \ttNonterm{feature-toggles} ::= `features' `:' `simple' `;'\ttSem
+  resource \{
+    \ttGlobal{FunctionToggle} := false;
+    \ttGlobal{ForLoopToggle} := false;
+    \ttGlobal{SwitchCaseToggle} := false;
+  \}
+\end{alltt}
+
+\subsubsection*{Circuit Body}
+The \synNonterm{directive-list} lists directives in both the circuit body as well as the bodies of sub-scope features.
+Each directive is given the inherited \semGlobal{state} attribute as described in subsection \ref{state_text}.
+Directives are not necessarily evaluated in order.
+They may be reordered so long as doing so does not alter the meaning of the circuit or trigger a \semFrag{fail\_if(...)} which wouldn't otherwise be triggered.
+For example, switching two \texttt{@short\_witness} directives, changes the order in which an input stream is consumed, and thus would be forbidden.\\
+
+In order to check that a function-gate consumes all the instance and short witness values which it claims, the \ttNonterm{directive-list} must synthesize a count for each.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{directive-list}{0} ::= [ \ttNontermN{directive}{1...n} ]+ \ttSem
+  resource \{
+    for i from 1 to n \{
+      \ttNontermN{directive}{i}.\ttGlobal{state} := \ttNontermN{directive-list}{0}.\ttGlobal{state};
+    \}
+    process(\ttNontermN{directive}{1...n});
+    
+    \ttNontermN{directive-list}{0}.instanceCount := 0;
+    \ttNontermN{directive-list}{0}.shortWitness := 0;
+    for i from 1 to n \{
+      \ttNontermN{directive-list}{0}.instanceCount += \ttNontermN{directive}{i}.instanceCount;
+      \ttNontermN{directive-list}{0}.shortWitnessCount += \ttNontermN{directive}{i}.shortWitnessCount;
+    \}
+  \}
+\end{alltt}
+
+Each allowable directive is also given the inherited \semGlobal{state} attribute.
+These directives will be described in detail in subsections \ref{simple_gate_text}, \ref{function_gate_text}, \ref{for_loops_text}, and \ref{switch_case_text}.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{directive}{0} ::= \ttNontermN{binary-gate}{1}
+                | \ttNontermN{binary-const-gate}{1}
+                | \ttNontermN{unary-gate}{1}
+                | \ttNontermN{input}{1}
+                | \ttNontermN{copy}{1}
+                | \ttNontermN{assign}{1}
+                | \ttNontermN{assert-zero}{1}
+                | \ttNontermN{delete-single}{1}
+                | \ttNontermN{delete-range}{1}
+                | \ttNontermN{function-invoke}{1}
+                | \ttNontermN{anon-function}{1}
+                | \ttNontermN{for-loop}{1}
+                | \ttNontermN{switch-statement}{1}\ttSem
+  resource \{
+    match \{
+      \ttNontermN{binary-gate}{1}: \{
+        \ttNontermN{binary-gate}{1}.\ttGlobal{state} := \ttNontermN{directive}{0}.\ttGlobal{state};
+        process(\ttNontermN{binary-gate}{1});
+      \}
+      ...
+      \ttNontermN{switch-statement}{1}: \{
+        \ttNontermN{switch-statement}{1}.\ttGlobal{state} := \ttNontermN{directive}{0}.\ttGlobal{state};
+        process(\ttNontermN{switch-statement}{1});
+      \}
+    \}
+    
+    \ttNontermN{directive}{0}.instanceCount := 0;
+    \ttNontermN{directive}{0}.shortWitnessCount := 0;
+    match \{
+      \ttNontermN{input}{1}: \{
+        \ttNontermN{directive}{0}.instanceCount += \ttNontermN{input}{1}.instanceCount;
+        \ttNontermN{directive}{0}.shortWitnessCount += \ttNontermN{input}{1}.shortWitnessCount;
+      \}
+      \ttNontermN{function-invoke}{1}: \{
+        \ttNontermN{directive}{0}.instanceCount += \ttNontermN{function-invoke}{1}.instanceCount;
+        \ttNontermN{directive}{0}.shortWitnessCount +=
+          \ttNontermN{function-invoke}{1}.shortWitnessCount;
+      \}
+      \ttNontermN{anon-function}{1}: \{
+        \ttNontermN{directive}{0}.instanceCount += \ttNontermN{anon-function}{1}.instanceCount;
+        \ttNontermN{directive}{0}.shortWitnessCount += \ttNontermN{anon-function}{1}.shortWitnessCount;
+      \}
+      \ttNontermN{for-loop}{1}: \{
+        \ttNontermN{directive}{0}.instanceCount += \ttNontermN{for-loop}{1}.instanceCount;
+        \ttNontermN{directive}{0}.shortWitnessCount += \ttNontermN{for-loop}{1}.shortWitnessCount;
+      \}
+      \ttNontermN{switch-statement}{1}: \{
+        \ttNontermN{directive}{0}.instanceCount += \ttNontermN{switch-statement}{1}.instanceCount;
+        \ttNontermN{directive}{0}.shortWitnessCount +=
+          \ttNontermN{switch-statement}{1}.shortWitnessCount;
+      \}
+    \}
+  \}
+\end{alltt}
+
+\subsection{Relation: Simple Gate Directives}\label{simple_gate_text}
+The first directive is a \synNonterm{binary-gate} which performs some function with two input wires, and one output wire.
+\synNonterm{binary-gate-type} will be defined below, but briefly may be \synFrag{@and} or \synFrag{@xor} in a boolean circuit, or \synFrag{@add} or \synFrag{@mul} in an arithmetic circuit.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{binary-gate}{0} ::= \ttNontermN{wire-number}{1} `<-' \ttNontermN{binary-gate-type}{1} `('
+                  \ttNontermN{wire-number}{2} `,' \ttNontermN{wire-number}{3} `)' `;'\ttSem
+  resource \{
+    \ttNontermN{binary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(\ttNontermN{wire-number}{2}.index);
+    \ttNontermN{binary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(\ttNontermN{wire-number}{3}.index);
+    \ttNontermN{binary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertResource(\ttNontermN{wire-number}{1}.index);
+  \}
+  evaluation \{
+    \ttNontermN{binary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertEvaluation(\ttNontermN{wire-number}{1}.index,
+        \ttNontermN{binary-gate-type}{1}.computation(
+          \ttNontermN{binary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveEvaluation(
+            \ttNontermN{wire-number}{2}.index)
+          \ttNontermN{binary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveEvaluation(
+            \ttNontermN{wire-number}{3}.index)));
+  \}
+\end{alltt}
+
+A \synNonterm{binary-const-gate} performs some function with one input wire, one constant input, and one output wire.
+\synNonterm{binary-const-gate-type} will be defined below, but briefly may be \synFrag{@addc} or \synFrag{@mulc} in an arithmetic circuit.
+Note the \synNonterm{field-literal} element will self-check that it is in range of $[0, p)$.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{binary-const-gate}{0} ::= \ttNontermN{wire-number}{1} `<-' \ttNontermN{binary-const-gate-type}{1} `('
+                        \ttNontermN{wire-number}{2} `,' \ttNontermN{field-literal}{1} `)' `;'\ttSem
+  resource \{
+    \ttNontermN{binary-const-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(\ttNontermN{wire-number}{2}.index);
+    fail_if(\ttGlobal{p} <= \ttNontermN{field-literal}{1}.value);
+    \ttNontermN{binary-const-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertResource(\ttNontermN{wire-number}{1}.index);
+  \}
+  evaluation \{
+    \ttNontermN{binary-const-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertEvaluation(\ttNontermN{wire-number}{1}.index,
+        \ttNontermN{binary-const-gate-type}{1}.computation(
+          \ttNontermN{binary-const-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}
+            .retrieveEvaluation(\ttNontermN{wire-number}{2}.index)
+          \ttNontermN{field-literal}{1}.value));
+  \}
+\end{alltt}
+
+A \synNonterm{unary-gate} performs some function with one input wire, and one output wire.
+The function which it performs, \synNonterm{unary-gate-type}, will be defined below, but briefly must only be \synFrag{@not} for a boolean circuit.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{unary-gate}{0} ::= \ttNontermN{wire-number}{1} `<-' \ttNontermN{unary-gate-type}{1} `('
+                 \ttNontermN{wire-number}{2} `)' `;'\ttSem
+  resource \{
+    \ttNontermN{unary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(\ttNontermN{wire-number}{2}.index);
+    \ttNontermN{unary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertResource(\ttNontermN{wire-number}{1}.index);
+  \}
+  evaluation \{
+    \ttNontermN{unary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertEvaluation(\ttNontermN{wire-number}{1}.index,
+        \ttNontermN{unary-gate-type}{1}.computation(
+          \ttNontermN{unary-gate}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveEvaluation(
+            \ttNontermN{wire-number}{2}.index)));
+  \}
+\end{alltt}
+
+Syntax and semantic definitions for \synNonterm{binary-gate-type}, \synNonterm{binary-const-gate-type}, and \synNonterm{unary-gate-type} are provided here.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{binary-gate-type}{0} ::= `@and' | `@xor' | `@add' | `@mul'\ttSem
+  resource \{
+    fail_if(`@and' && !\ttGlobal{EnableAnd});
+    fail_if(`@xor' && !\ttGlobal{EnableXor});
+    fail_if(`@add' && !\ttGlobal{EnableAdd});
+    fail_if(`@mul' && !\ttGlobal{EnableMul});
+  \}
+  evaluation \{
+    \ttNontermN{binary-gate-type}{0}.computation := match \{
+      case `@and': /* \textit{logical and} */;
+      case `@xor': /* \textit{logical exclusive or} */;
+      case `@add': /* \textit{addition in GF(p)} */;
+      case `@mul': /* \textit{multiplication in GF(p)} */;
+    \}
+  \}\ttSyn
+
+  \ttNontermN{binary-const-gate-type}{0} ::= `@addc' | `@mulc'\ttSem
+  resource \{
+    fail_if(`@addc' && !\ttGlobal{EnableAddC});
+    fail_if(`@mulc' && !\ttGlobal{EnableMulC});
+  \}
+  evaluation \{
+    \ttNontermN{binary-const-gate-type}{0}.computation := match \{
+      case `@addc': /* \textit{addition in GF(p)} */;
+      case `@mulc': /* \textit{multiplication in GF(p)} */;
+    \}
+  \}\ttSyn
+
+  \ttNontermN{unary-gate-type}{0} ::= `@not'\ttSem
+  resource \{
+    fail_if(!\ttGlobal{EnableNot});
+  \}
+  evaluation \{
+    \ttNontermN{unary-gate-type}{0}.computation := /* \textit{logical negate} */;
+  \}
+\end{alltt}
+
+The \synNonterm{input} directive assigns a value to its output wire by popping a value from the aforementioned \semGlobal{instance} or \semGlobal{shortWitness} queue. \\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{input}{0} ::= \ttNontermN{wire-number}{1} `<-' [ `@instance' | `@short_witness' ] `;'\ttSem
+  resource \{
+    \ttNontermN{input}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertResource(\ttNontermN{wire-number}{1}.index);
+    match \{
+      `@instance': \{
+        \ttNontermN{input}{0}.instanceCount := 1;
+        \ttNontermN{input}{0}.shortWitnessCount := 0;
+      \}
+      `@short_witness': \{
+        \ttNontermN{input}{0}.instanceCount := 0;
+        \ttNontermN{input}{0}.shortWitnessCount := 1;
+      \}
+    \}
+  \}
+  evaluation \{
+    if(`@instance') \{
+      fail_if(\ttNontermN{input}{0}.\ttGlobal{state}.\ttGlobal{instance}.size == 0);
+      \ttNontermN{input}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertEvaluation(
+        \ttNontermN{wire-number}{1}.index,
+        \ttNontermN{input}{0}.\ttGlobal{state}.\ttGlobal{Instance}.pop());
+    \}
+    else \{
+      fail_if(\ttNontermN{input}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.size == 0);
+      \ttNontermN{input}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertEvaluation(
+        \ttNontermN{wire-number}{1}.index,
+        \ttNontermN{input}{0}.\ttGlobal{state}.\ttGlobal{ShortWitness}.pop());
+    \}
+  \}
+\end{alltt}
+
+The \synNonterm{copy} directive will copy the value from its input wire to the output wire, without changing it.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{copy}{0} ::= \ttNontermN{wire-number}{1} `<-' \ttNontermN{wire-number}{2} `;'\ttSem
+  resource \{
+    \ttNontermN{copy}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(\ttNontermN{wire-number}{2}.index);
+    \ttNontermN{copy}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertResource(\ttNontermN{wire-number}{1}.index);
+  \}
+  evaluation \{
+    \ttNontermN{copy}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertEvaluation(\ttNontermN{wire-number}{1}.index,
+        \ttNontermN{copy}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveEvaluation(\ttNontermN{wire-number}{2}.index));
+  \}
+\end{alltt}
+
+The \synNonterm{assign} directive will assign the value from an input constant to the output wire.
+The \synNonterm{field-literal} element self checks that it is in range of $[0, p)$.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{assign}{0} ::= \ttNontermN{wire-number}{1} `<-' \ttNontermN{field-literal}{1} `;'\ttSem
+  resource \{
+    \ttNontermN{assign}{0}.\ttGlobal{wires}.insertResource(\ttNontermN{wire-number}{1}.index);
+  \}
+  evaluation \{
+    \ttNontermN{assign}{0}.\ttGlobal{wires}.insertEvaluation(
+      \ttNontermN{wire-number}{1}.index, \ttNontermN{field-literal}{1}.value);
+  \}
+\end{alltt}
+
+To verify an output value, the \synNonterm{assert-zero} directive checks that the value of some wire is exactly zero (0).
+Failing this check would constitute an \textit{evaluation invalidity}.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{assert-zero}{0} ::= `@assert_zero' `(' \ttNontermN{wire-number}{1} `)' `;'\ttSem
+  resource \{
+    \ttNontermN{assert-zero}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(\ttNontermN{wire-number}{1}.index);
+  \}
+  evaluation \{
+    if(\ttNontermN{assert-zero}{0}.\ttGlobal{state}.\ttGlobal{switchActive}) \{
+      fail_if(\ttNontermN{assert-zero}{0}.\ttGlobal{state}.\ttGlobal{wires}
+        .retrieveEvaluation(\ttNontermN{wire-number}{1}.index) != 0);
+    \}
+  \}
+\end{alltt}
+
+The \synNonterm{delete-single} and \synNonterm{delete-range} directives are hints to a backend that certain wires may be removed from active memory.
+Although this hint may be ignored by a backend, it does constitute a promise that these wires will never again be referenced or reassigned.
+Note that the wires given in \synNonterm{delete-range} include both the first wire, the last wire, and each wire between.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{delete-single}{0} ::= `@delete' `(' \ttNontermN{wire-number}{1} `)' `;'\ttSem
+  resource \{
+    \ttNontermN{delete-single}{0}.\ttGlobal{state}.\ttGlobal{wires}.remove(\ttNontermN{wire-number}{1}.index);
+  \}\ttSyn
+
+  \ttNontermN{delete-range}{0} ::= `@delete' `(' \ttNontermN{wire-number}{1} `,' \ttNontermN{wire-number}{2} `)' `;'\ttSem
+  resource \{
+    fail_if(\ttNontermN{wire-number}{1}.index > \ttNontermN{wire-number}{2}.index);
+    for i from \ttNontermN{wire-number}{1}.index to \ttNontermN{wire-number}{2}.index \{
+      \ttNontermN{delete-range}{0}.\ttGlobal{state}.\ttGlobal{wires}.remove(i);
+    \}
+  \}
+\end{alltt}
+
+\subsection{Relation: Function Gates}\label{function_gate_text}
+A function-gate separates a sub-circuits declaration from its invocation or invocations.
+The function-gate declarations are listed in the top level scope before the circuit's body (see section \ref{structure_text}).
+Invocations take the form of directives referencing the name of a prior declaration.
+Additionally, an ``anonymous function'' may be declared and invoked simultaneously.
+Since the ``anonymous function'' has no name, it cannot be referenced in multiple locations.\\
+
+Function gates represent sub-circuits, not functions in the conventional sense.
+As such, function gates cannot recurse.
+A special processing phase is added to their attribute grammars to detect recursion.
+This phase should be interpreted as processing a resource from front to back, without reordering.
+Although described here as a prerequisite to \textit{resource validity}, it is indeed a component to \textit{resource validity}.
+It relies on a \semGlobal{FunctionsSet} global set to check previously encountered functions.
+Additionally the \textit{resource} and \textit{evaluation validity} phases of a function gate delayed from their declaration.
+Instead of processing attributes immediately, they are cached in a global map \semGlobal{FunctionsMap} and processed when they are invoked.
+
+\begin{alltt}\ttSyn
+  \ttNontermN{function-declare}{0} ::= `@function' `(' \ttNontermN{label}{1} `,'
+                     `@out' `:' \ttNontermN{numeric-literal}{1} `,'
+                     `@in' `:' \ttNontermN{numeric-literal}{2} ','
+                     `@instance' `:' \ttNontermN{numeric-literal}{3} `,'
+                     `@short\_witness' `:' \ttNontermN{numeric-literal}{4} `)'
+                       \ttNontermN{directive-list}{1}
+                  `@end'\ttSem
+  recursion_check \{
+    process(\ttNontermN{directive-list}{1});
+
+    fail_if(\ttGlobal{FunctionsSet}.has(\ttNontermN{label}{1}));
+    \ttGlobal{functionsSet}.put(\ttNontermN{label}{1});
+  \}
+  resource \{
+    fail_if(!\ttGlobal{FunctionToggle});
+    \ttGlobal{FunctionsMap}.put(\ttNontermN{label}{1}, \{
+          outputWireCount: \ttNontermN{numeric-literal}{1}.value,
+          inputWireCount: \ttNontermN{numeric-literal}{2}.value,
+          instanceCount: \ttNontermN{numeric-literal}{3}.value,
+          shortWitnessCount: \ttNontermN{numeric-literal}{4}.value,
+          body: \ttNontermN{directive-list}{1}
+        \});
+  \}
+\end{alltt}
+
+Function invocation is described here.
+First, it will do some checking to ensure the function exists.
+Then, it builds a new program \semGlobal{state} with the same size parameters as described by the function's signature.
+Since attribute processing was postponed by the \semNonterm{function-declare}, the invocation processes the cached attribute syntax.
+Lastly, it will check that all outputs of the function were correctly assigned and that all of the instance and short witnesses were consumed.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{function-invoke}{0} ::= [ \ttNontermN{wire-list}{1} `<-' ]? `@call' `('
+                   \ttNontermN{label}{1} [ `,' \ttNontermN{wire-list}{2} ]? `)' `;'\ttSem
+  recursion_check \{
+    fail_if(!\ttGlobal{FunctionsSet}.has(\ttNontermN{label}{1}));
+  \}
+  resource \{
+    fail_if(!\ttGlobal{FunctionToggle});
+    fail_if(!\ttGlobal{FunctionsMap}.has(\ttNontermN{label}{1}));
+
+    function := \ttGlobal{FunctionsMap}.get(\ttNontermN{label}{1});
+
+    sub_wires := wireset();
+    if(\ttNontermN{wire-list}{1}) \{
+      for i from 0 to \ttNontermN{wire-list}{1}.indexes.size \{
+        \ttNontermN{function-invoke}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapOutput(
+          \ttNontermN{wire-list}{1}.indexes[i], sub_wires);
+      \}
+    \}
+    if(\ttNontermN{wire-list}{2}) \{
+      for i from 0 to \ttNontermN{wire-list}{2}.indexes.size \{
+        \ttNontermN{function-invoke}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapInput(
+          \ttNontermN{wire-list}{2}.indexes[i], sub_wires);
+      \}
+    \}
+
+    fail_if(sub_wires.outputs.size != function.outputWireCount);
+    fail_if(sub_wires.inputs.size != function.inputWireCount);
+
+    function.body.\ttGlobal{state} := state(
+      \ttGlobal{wires} := sub_wires,
+      \ttGlobal{iterators} := map());
+
+    process(function.body);
+
+    for i from 0 to sub_wires.outputs.size \{
+      sub_wires.retrieveResource(i);
+    \}
+
+    fail_if(function.body.instanceCount != function.instanceCount);
+    fail_if(function.body.shortWitnessCount != function.shortWitnessCount);
+    \ttNontermN{function-invoke}{0}.instanceCount := function.instanceCount;
+    \ttNontermN{function-invoke}{0}.shortWitnessCount := function.shortWitnessCount;
+  \}
+  evaluation \{
+    function := \ttGlobal{FunctionsMap}.get(\ttNontermN{label}{1};
+
+    sub_instance := stream();
+    for i from 0 to function.instanceCount \{
+      fail_if(\ttNontermN{function-invoke}{0}.\ttGlobal{state}.\ttGlobal{instance}.size == 0);
+      sub_instance.put(\ttNontermN{function-invoke}{0}.\ttGlobal{state}.\ttGlobal{instance}.pop());
+    \}
+    function.body.\ttGlobal{state}.\ttGlobal{instance} := sub_instance;
+
+    sub_shortWitness := stream();
+    for i from 0 to function.shortWitnessCount \{
+      fail_if(\ttNontermN{function-invoke}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.size == 0);
+      sub_shortWitness.put(\ttNontermN{function-invoke}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.pop());
+    \}
+    function.body.\ttGlobal{state}.\ttGlobal{shortWitness} := sub_shortWitness;
+    function.body.\ttGlobal{state}.\ttGlobal{switchActive} :=
+      \ttNontermN{function-invoke}.\ttGlobal{state}.\ttGlobal{switchActive};
+
+    process(function.body);
+
+    fail_if(sub_instance.size != 0);
+    fail_if(sub_shortWitness.size != 0);
+  \}
+\end{alltt}
+
+The \synNonterm{wire-list} is a list of wire indexes composed by both single element items and range of element items.
+It synthesizes an \semFrag{indexes} list attribute.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{wire-list}{0} ::= \ttNontermN{wire-list-element}{1} [ `,' \ttNontermN{wire-list-element}{2...n} ]*\ttSem
+  resource \{
+    \ttNontermN{wire-list}{0}.indexes := list();
+    for i from 1 to n \{
+      \ttNontermN{wire-list}{0}.indexes.appendAll(\ttNontermN{wire-list-element}{i}.indexes);
+    \}
+  \}\ttSyn
+  
+  \ttNontermN{wire-list-element}{0} ::= \ttNontermN{wire-list-single}{1} | \ttNontermN{wire-list-range}{1}\ttSem
+  resource \{
+    \ttNontermN{wire-list-element}{0}.indexes := list();
+    match \{
+      \ttNontermN{wire-list-single}{1}: \{
+        \ttNontermN{wire-list-element}{0}.indexes.append(\ttNontermN{wire-list-single}{1}.index);
+      \}
+      \ttNontermN{wire-list-range}{1}: \{
+        \ttNontermN{wire-list-element}{0}.indexes.appendAll(\ttNontermN{wire-list-single}{1}.indexes);
+      \}
+    \}
+  \}\ttSyn
+  
+  \ttNontermN{wire-list-single}{0} ::= \ttNontermN{wire-number}{1}\ttSem
+  resource \{
+    \ttNontermN{wire-list-single}{0}.index := \ttNontermN{wire-number}{1}.index;
+  \}\ttSyn
+
+  \ttNontermN{wire-list-range}{0} ::= \ttNontermN{wire-number}{1} `...' \ttNontermN{wire-number}{2}\ttSem
+  resource \{
+    fail_if(\ttNontermN{wire-number}{1}.index > \ttNontermN{wire-number}{2}.index);
+
+    \ttNontermN{wire-list-range}{0}.indexes := list();
+
+    // interpret loop as being inclusive on both ends
+    for i from \ttNontermN{wire-number}{1}.index to \ttNontermN{wire-number}{2}.index \{
+      \ttNontermN{wire-list-range}{0}.indexes.append(i);
+    \}
+  \}
+\end{alltt}
+
+The last variety of function-gates are anonymous function gates.
+Anonymous gates declare their bodies inline, and are invoked immediately.
+Since they have no name, there is no syntax which could cause them to recurse.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{anon-function}{0} ::= [ \ttNontermN{wire-list}{1} `<-' ]? `@anon_call' `('
+                    [ \ttNontermN{wire-list}{2}  `,' ]?
+                    `@instance' `:' \ttNontermN{numeric-literal}{1} `,'
+                    `@short\_witness' `:' \ttNontermN{numeric-literal}{2} `)'
+                      \ttNontermN{directive-list}{1}
+                    `@end'\ttSem
+  resource \{
+    fail_if(!\ttGlobal{FunctionToggle});
+
+    sub_wires := wireset();
+    if(\ttNontermN{wire-list}{1}) \{
+      for i from 0 to \ttNontermN{wire-list}{1}.indexes.size \{
+        \ttNontermN{anon-function}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapOutput(
+          \ttNontermN{wire-list}{1}.indexes[i], sub_wires);
+      \}
+    \}
+    if(\ttNontermN{wire-list}{2}) \{
+      for i from 0 to \ttNontermN{wire-list}{2}.indexes.size \{
+        \ttNontermN{anon-function}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapInput(
+          \ttNontermN{wire-list}{2}.indexes[i], sub_wires);
+      \}
+    \}
+
+    \ttNontermN{directive-list}{1}.\ttGlobal{state} := state(
+      \ttGlobal{wires} := sub_wires,
+      \ttGlobal{iterators} := \ttNontermN{anon-function}{0}.\ttGlobal{state}.\ttGlobal{iterators});
+
+    process(\ttNontermN{directive-list}{1});
+
+    for i from 0 to sub_wires.outputs.size \{
+      sub_wires.retrieveResource(i);
+    \}
+
+    fail_if(\ttNontermN{directive-list}{1}.instanceCount != \ttNontermN{numeric-literal}{1}.value);
+    fail_if(\ttNontermN{directive-list}{1}.shortWitnessCount != \ttNontermN{numeric-literal}{2}.value);
+    \ttNontermN{anon-function}{0}.instanceCount := \ttNontermN{numeric-literal}{1}.value;
+    \ttNontermN{anon-function}{0}.shortWitnessCount := \ttNontermN{numeric-literal}{2}.value;
+  \}
+  evaluation \{
+    sub_instance := stream();
+    for i from 0 to \ttNontermN{numeric-literal}{1}.value \{
+      fail_if(\ttNontermN{anon-function}{0}.\ttGlobal{state}.\ttGlobal{instance}.size == 0);
+      sub_instance.put(\ttNontermN{anon-function}{0}.\ttGlobal{state}.\ttGlobal{instance}.pop());
+    \}
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{instance} := sub_instance;
+
+    sub_shortWitness := stream();
+    for i from 0 to \ttNontermN{numeric-literal}{2}.value \{
+      fail_if(\ttNontermN{anon-function}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.size == 0);
+      sub_shortWitness.put(\ttNontermN{anon-function}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.pop());
+    \}
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{shortWitness} := sub_shortWitness;
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{switchActive} :=
+      \ttNontermN{anon-function}.\ttGlobal{state}.\ttGlobal{switchActive};
+
+    process(\ttNontermN{directive-list}{1});
+
+    fail_if(sub_instance.size != 0);
+    fail_if(sub_shortWitness.size != 0);
+  \}
+\end{alltt}
+
+\subsection{Relation: For Loops}\label{for_loops_text}
+A for-loop simply repeats a function a set number of times.
+To accomplish this in the attribute grammar we introduce functionality for ``clear attributes'' and ``reprocess attributes''.
+We also need to introduce syntax for altering the function's inputs and outputs on each iteration.
+Iterator expressions will be described in detail, but briefly they replace wire indexes in the \synNonterm{wire-list} with expressions over loop iterators.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{for-loop}{0} ::= [ \ttNontermN{wire-list}{1} `<-' ]? `@for' \ttNontermN{label}{1}
+               `@first' \ttNontermN{numeric-literal}{1} `@last' \ttNontermN{numeric-literal}{2}
+                 [ \ttNontermN{iter-expr-function-invoke}{1} | \ttNontermN{iter-expr-anon-function}{1} ]
+               `@end'\ttSem
+  resource \{
+    fail_if(!\ttGlobal{ForLoopToggle});
+    fail_if(\ttNontermN{numeric-literal}{1} > \ttNontermN{numeric-literal}{1});
+
+    fail_if(\ttNontermN{for-loop}{0}.\ttGlobal{state}.\ttGlobal{iterators}.has(\ttNontermN{label}{1}));
+    \ttNontermN{for-loop}{0}.\ttGlobal{state}.\ttGlobal{iterators}.put(\ttNontermN{label}{1}, 0);
+
+    loopOutputs := list();
+    if(\ttNontermN{wire-list}{1}) \{
+      loopOutputs := \ttNontermN{wire-list}{1}.indexes;
+    \}
+    
+    \ttNontermN{for-loop}{0}.instanceCount := 0;
+    \ttNontermN{for-loop}{0}.shortWitnessCount := 0;
+  \}
+
+  // loop is interpreted as inclusive on both ends
+  for i from \ttNontermN{numeric-literal}{1}.value to \ttNontermN{numeric-literal}{2}.value \{
+    resource \{
+      \ttNontermN{for-loop}{0}.\ttGlobal{state}.\ttGlobal{iterators}.set(\ttNontermN{label}{1}, i);
+      match \{
+        \ttNontermN{iter-expr-function-invoke}{1}: \{
+          \ttNontermN{iter-expr-function-invoke}{1}.\ttGlobal{state} := \ttNontermN{for-loop}{9}.\ttGlobal{state};
+          \ttNontermN{iter-expr-function-invoke}{1}.loopOutputs := loopOutputs;
+
+          \ttNontermN{for-loop}{0}.instanceCount +=
+            \ttNontermN{iter-expr-function-invoke}{1}.instanceCount;
+          \ttNontermN{for-loop}{0}.shortWitnessCount +=
+            \ttNontermN{iter-expr-function-invoke}{1}.shortWitnessCount;
+        \}
+        \ttNontermN{iter-expr-anon-function}{1}: \{
+          \ttNontermN{iter-expr-anon-function}{1}.\ttGlobal{state} := \ttNontermN{for-loop}{9}.\ttGlobal{state};
+          \ttNontermN{iter-expr-function-invoke}{1}.loopOutputs := loopOutputs;
+
+          \ttNontermN{for-loop}{0}.instanceCount +=
+            \ttNontermN{iter-expr-anon-function}{1}.instanceCount;
+          \ttNontermN{for-loop}{0}.shortWitnessCount +=
+            \ttNontermN{iter-expr-anon-function}{1}.shortWitnessCount;
+        \}
+      \}
+    \}
+    evaluation \{
+      match \{
+        \ttNontermN{iter-expr-function-invoke}{1}: \{
+          process(\ttNontermN{iter-expr-function-invoke}{1});
+        \}
+        \ttNontermN{iter-expr-anon-function}{1}: \{
+          process(\ttNontermN{iter-expr-anon-function}{1});
+        \}
+      \}
+    \}
+  \}
+
+  resource \{
+    \ttNontermN{for-loop}{0}.\ttGlobal{state}.\ttGlobal{iterators}.remove(\ttNontermN{label}{1});
+
+    for i from 0 to loopOutputs.size \{
+      \ttNontermN{for-loop}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(loopOutputs[i]);
+    \}
+  \}
+\end{alltt}
+
+In order to meaningfully repeat the function however, the inputs and outputs need to advance on each iteration.
+To do this, we introduce ``iterator expressions'' as a special syntax replacing the \synNonterm{wire-list} used by function invocations.
+An iterator expression takes the place of each \synNonterm{wire-number} element within the \synNonterm{wire-list}.
+The \synNonterm{iter-expr-function-invoke} and \synNonterm{iter-expr-anon-function} will use iterator expressions within their \synNonterm{wire-list}s to express advancement on an interation.
+The \synNonterm{iter-expr-wire-list}, shown later, has the same form as a \synNonterm{wire-list}, but with \synNonterm{iter-expr-wire-number}s instead of regular \synNontermN{wire-numbers}.\\
+
+Iterator expressions require the \semGlobal{iterators} object of the \semGlobal{state}.
+Their arithmetic uses integers in the range $0$ through $2^{64} -1$ with wraparound.
+The \semGlobal{iterators} map is updated using lexical scoping rules.
+Briefly, when entering an anonymous function, containing loop iterators are transferred into the new scope, but when entering named functions, they are not.\\
+
+Note that \synNonterm{iter-expr-wire-number} is slightly ambiguous with a \synNonterm{wire-number}, as \texttt{\$123} could be interpreted either way.
+Interpret this as to allow promotion from a \synNonterm{wire-number} to a \synNonterm{iter-expr-wire-number}, where the latter is required.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{iter-expr-wire-number}{0} ::= `\$' \ttNontermN{iter-expr}{1} \ttSem
+  resource \{
+    \ttNontermN{iter-expr}{1}.\ttGlobal{iterators} := \ttNontermN{iter-expr-wire-number}{0}.\ttGlobal{state}.\ttGlobal{iterators};
+    \ttNontermN{iter-expr-wire-number}{0}.index := \ttNontermN{iter-expr}{1}.value;
+  \} \ttSyn
+  
+  \ttNontermN{iter-expr}{0} ::= \ttNontermN{numeric-literal}{1} \ttSem
+  resource \{
+    \ttNontermN{iter-expr}{0}.value := \ttNontermN{numeric-literal}{1}.value;
+  \} \ttSyn
+
+  \ttNontermN{iter-expr}{0} ::= \ttNontermN{label}{1} \ttSem
+  resource \{
+    fail_if(!\ttNontermN{iter-expr}{0}.\ttGlobal{iterators}.has(\ttNontermN{label}{1}));
+    \ttNontermN{iter-expr}{0}.value := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators}.get(\ttNontermN{label}{1});
+  \} \ttSyn
+    
+  \ttNontermN{iter-expr}{0} ::= `(' \ttNontermN{iter-expr}{1} `+'  \ttNontermN{iter-expr}{2} `)' \ttSem
+  resource \{
+    \ttNontermN{iter-expr}{1}.\ttGlobal{iterators} := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators};
+    \ttNontermN{iter-expr}{2}.\ttGlobal{iterators} := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators};
+    process(\ttNontermN{iter-expr}{1...2});
+    \ttNontermN{iter-expr}{0}.value := \ttNontermN{iter-expr}{1}.value + \ttNontermN{iter-expr}{2}.value;
+  \} \ttSyn
+      
+  \ttNontermN{iter-expr}{0} ::= `(' \ttNontermN{iter-expr}{1} `-'  \ttNontermN{iter-expr}{2} `)' \ttSem
+  resource \{
+    \ttNontermN{iter-expr}{1}.\ttGlobal{iterators} := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators};
+    \ttNontermN{iter-expr}{2}.\ttGlobal{iterators} := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators};
+    process(\ttNontermN{iter-expr}{1...2});
+    \ttNontermN{iter-expr}{0}.value := \ttNontermN{iter-expr}{1}.value - \ttNontermN{iter-expr}{2}.value;
+  \} \ttSyn
+      
+  \ttNontermN{iter-expr}{0} ::= `(' \ttNontermN{iter-expr}{1} `*'  \ttNontermN{iter-expr}{2} `)' \ttSem
+  resource \{
+    \ttNontermN{iter-expr}{1}.\ttGlobal{iterators} := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators};
+    \ttNontermN{iter-expr}{2}.\ttGlobal{iterators} := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators};
+    process(\ttNontermN{iter-expr}{1...2});
+    \ttNontermN{iter-expr}{0}.value := \ttNontermN{iter-expr}{1}.value * \ttNontermN{iter-expr}{2}.value;
+  \} \ttSyn
+\end{alltt}
+
+In addition to sum, difference, and product expressions, an \synNonterm{iter-expr} may include division by a numeric constant.
+This computes the integer quotient.
+The numerator may be an arbitrary expression, including other divisions, and the denominator a non-zero constant.
+Numerator, denominator, and quotient values are, of course, all 64-bit unsigned integers with wraparound.
+
+\begin{alltt}\ttSyn
+  \ttNontermN{iter-expr}{0} ::= `(' \ttNontermN{iter-expr}{1} `/'  \ttNontermN{numeric-literal}{1} `)' \ttSem
+  resource \{
+    fail_if(\ttNontermN{numeric-literal}{1}.value == 0);
+    \ttNontermN{iter-expr}{1}.\ttGlobal{iterators} := \ttNontermN{iter-expr}{0}.\ttGlobal{iterators};
+    process(\ttNontermN{iter-expr}{1});
+    \ttNontermN{iter-expr}{0}.value := \ttNontermN{iter-expr}{1}.value * \ttNontermN{numeric-literal}{1}.value;
+  \} \ttSyn
+\end{alltt}
+
+The \synNonterm{iter-expr-wire-list} will mirror the form of a \synNonterm{wire-list}, by replacing each of the \synNonterm{wire-number}s with the calculated value of a \synNonterm{iter-expr-wire-number}.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{iter-expr-wire-list}{0} ::= \ttNontermN{iter-expr-wire-element}{1}
+                          [ `,' \ttNontermN{iter-expr-wire-element}{2...n} ]*\ttSem
+  resource \{
+    \ttNontermN{iter-expr-wire-list}{0}.indexes := list();
+    for i from 1 to n \{
+      \ttNontermN{iter-expr-wire-list-element}{i}.\ttGlobal{iterators} :=
+        \ttNontermN{iter-expr-wire-list}{0}.\ttGlobal{iterators};
+      process(\ttNontermN{iter-expr-wire-list-element}{i});
+      \ttNontermN{iter-expr-wire-list}{0}.appendAll(
+        \ttNontermN{iter-expr-wire-list-element}{i}.indexes);
+    \}
+  \}\ttSyn
+
+  \ttNontermN{iter-expr-wire-list-element}{0} ::= \ttNontermN{iter-expr-wire-list-single}{1}
+                                 | \ttNontermN{iter-expr-wire-list-range}{1}\ttSem
+  resource \{
+    \ttNontermN{iter-expr-wire-list-element}{0}.indexes := list();
+    match \{
+      \ttNontermN{iter-expr-wire-list-single}{1}: \{
+        \ttNontermN{iter-expr-wire-list-single}{1}.\ttGlobal{iterators} :=
+          \ttNontermN{iter-expr-wire-list-element}{0}.\ttGlobal{iterators};
+        process(\ttNontermN{iter-expr-wire-list-single}{1});
+        \ttNontermN{iter-expr-wire-list-element}{0}.indexes.append(
+          \ttNontermN{iter-expr-wire-list-single}{1}.index);
+      \}
+      \ttNontermN{iter-expr-wire-list-range}{1}: \{
+        \ttNontermN{iter-expr-wire-list-range}{1}.\ttGlobal{iterators} :=
+          \ttNontermN{iter-expr-wire-list-element}{0}.\ttGlobal{iterators};
+        process(\ttNontermN{iter-expr-wire-list-range}{1});
+        \ttNontermN{iter-expr-wire-list-element}{0}.indexes.appendAll(
+          \ttNontermN{iter-expr-wire-list-range}{1}.indexes);
+      \}
+    \}
+  \}\ttSyn
+
+  \ttNontermN{iter-expr-wire-list-single}{0} ::= \ttNontermN{iter-expr-wire-number}{1}\ttSem
+  resource \{
+    \ttNontermN{iter-expr-wire-number}{1}.\ttGlobal{iterators} :=
+      \ttNontermN{iter-expr-wire-list-single}{0}.\ttGlobal{iterators};
+    processs(\ttNontermN{iter-expr-wire-number}{1});
+    \ttNontermN{iter-expr-wire-list-single}{0}.index :=
+      \ttNontermN{iter-expr-wire-number}{1}.index;
+  \}\ttSyn
+
+  \ttNontermN{iter-expr-wire-list-range}{0} ::= \ttNontermN{iter-expr-wire-number}{1}
+                                `...' \ttNontermN{iter-expr-wire-number}{2}\ttSem
+  resource \{
+    \ttNontermN{iter-expr-wire-number}{1}.\semGlobal{iterators} :=
+      \ttNontermN{iter-expr-wire-list-range}{0}.\semGlobal{iterators};
+    \ttNontermN{iter-expr-wire-number}{2}.\semGlobal{iterators} :=
+      \ttNontermN{iter-expr-wire-list-range}{0}.\semGlobal{iterators};
+
+    processs(\ttNontermN{iter-expr-wire-number}{1...2});
+    fail_if(\ttNontermN{iter-expr-wire-number}{1}.index > \ttNontermN{iter-expr-wire-number}{2}.index);
+
+    \ttNontermN{iter-expr-wire-list-range}{0}.indexes := list();
+
+    // interpret loop as being inclusive on both ends
+    for i from \ttNontermN{iter-expr-wire-number}{1}.index
+        to \ttNontermN{iter-expr-wire-number}{2}.index \{
+      \ttNontermN{iter-expr-wire-list-range}{0}.indexes.append(i);
+    \}
+  \}
+\end{alltt}
+
+Finally, the \synNonterm{iter-expr-function-invoke} and \synNonterm{iter-expr-anon-function} take the place of \synNonterm{function-invoke} and \synNonterm{anon-function} with the added iterator expression functionality.
+Their semantics are largely equivalent, except for the addition of checking output wires for set membership in the for loop's output list -- given as an inherited attribute, \synFrag{loopOutputs}.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{iter-expr-function-invoke}{0} ::= [ \ttNontermN{iter-expr-wire-list}{1} `<-' ]?
+                                 `@call' `(' \ttNontermN{label}{1}
+                                 [ `,' \ttNontermN{iter-expr-wire-list}{2} ]? `)' `;'\ttSem
+  recursion_check \{
+    fail_if(!\ttGlobal{FunctionsSet}.has(\ttNontermN{label}{1}));
+  \}
+  resource \{
+    fail_if(!\ttGlobal{FunctionToggle});
+    fail_if(!\ttGlobal{FunctionsMap}.has(\ttNontermN{label}{1}));
+    
+    function := \ttGlobal{FunctionsMap}.get(\ttNontermN{label}{1});
+    
+    sub_wires := wireset();
+    if(\ttNontermN{iter-expr-wire-list}{1}) \{
+      \ttNontermN{iter-expr-wire-list}{1}.\ttGlobal{iterators} :=
+        \ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{iterators};
+      process(\ttNontermN{iter-expr-wire-list}{1});
+
+      for i from 0 to \ttNontermN{iter-expr-wire-list}{1}.indexes.size \{
+        fail_if(!\ttNontermN{iter-expr-function-invoke}{0}.loopOutputs.has(
+          \ttNontermN{iter-expr-wire-list}{1}.indexes[i]));
+
+        \ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapOutput(
+          \ttNontermN{iter-expr-wire-list}{1}.indexes[i], sub_wires);
+      \}
+    \}
+    if(\ttNontermN{iter-expr-wire-list}{2}) \{
+      \ttNontermN{iter-expr-wire-list}{2}.\ttGlobal{iterators} :=
+        \ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{iterators};
+      process(\ttNontermN{iter-expr-wire-list}{2});
+
+      for i from 0 to \ttNontermN{iter-expr-wire-list}{2}.indexes.size \{
+        \ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapInput(
+          \ttNontermN{iter-expr-wire-list}{2}.indexes[i], sub_wires);
+      \}
+    \}
+    
+    fail_if(sub_wires.outputs.size != function.outputWireCount);
+    fail_if(sub_wires.inputs.size != function.inputWireCount);
+  
+    function.body.\ttGlobal{state} := state(
+      \ttGlobal{wires} := sub_wires,
+      \ttGlobal{iterators} := map());
+
+    process(function.body);
+  
+    for i from 0 to sub_wires.outputs.size \{
+      sub_wires.retrieveResource(i);
+    \}
+
+    fail_if(function.body.instanceCount != function.instanceCount);
+    fail_if(function.body.shortWitnessCount != function.shortWitnessCount);
+    \ttNontermN{iter-expr-function-invoke}{0}.instanceCount := function.instanceCount;
+    \ttNontermN{iter-expr-function-invoke}{0}.shortWitnessCount :=
+      function.shortWitnessCount;
+  \}
+  evaluation \{
+    function := \ttGlobal{FunctionsMap}.get(\ttNontermN{label}{1});
+    
+    sub_instance := stream();
+    for i from 0 to function.instancCount \{
+      fail_if(\ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{instance}.size == 0);
+      sub_instance.put(\ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{instance}.pop());
+    \}
+    function.body.\ttGlobal{state}.\ttGlobal{instance} := sub_instance;
+    
+    sub_shortWitness := stream();
+    for i from 0 to function.shortWitnessCount \{
+      fail_if(\ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.size == 0);
+      sub_shortWitness.put(
+        \ttNontermN{iter-expr-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.pop());
+    \}
+    function.body.\ttGlobal{state}.\ttGlobal{shortWitness} := sub_shortWitness;
+    function.body.\ttGlobal{state}.\ttGlobal{switchActive} :=
+      \ttNontermN{iter-expr-function-invoke}.\ttGlobal{state}.\ttGlobal{switchActive};
+
+    process(function.body);
+
+    fail_if(sub_instance.size != 0);
+    fail_if(sub_shortWitness.size != 0);
+  \}\ttSyn
+
+  \ttNontermN{iter-expr-anon-function}{0} ::= [ \ttNontermN{iter-expr-wire-list}{1} `<-' ]?
+                              `@anon_call' `('
+                              [ \ttNontermN{iter-expr-wire-list}{2} `,' ]?
+                              `@instance' `:' \ttNontermN{numeric-literal}{1} `,'
+                              `@short_witness' `:' \ttNontermN{numeric-literal}{2} `)'
+                                \ttNontermN{directive-list}{1}
+                              `@end'\ttSem
+  resource \{
+    sub_wires := wireset();
+    if(\ttNontermN{iter-expr-wire-list}{1}) \{
+      \ttNontermN{iter-expr-wire-list}{1}.\ttGlobal{iterators} :=
+        \ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{iterators};
+      process(\ttNontermN{iter-expr-wire-list}{1});
+
+      for i from 0 to \ttNontermN{iter-expr-wire-list}{1}.indexes.size \{
+        fail_if(!\ttNontermN{iter-expr-anon-function}{0}.loopOutputs.has(
+          \ttNontermN{iter-expr-wire-list}{1}.indexes[i]));
+
+        \ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapOutput(
+          \ttNontermN{iter-expr-wire-list}{1}.indexes[i], sub_wires);
+      \}
+    \}
+    if(\ttNontermN{iter-expr-wire-list}{2}) \{
+      \ttNontermN{iter-expr-wire-list}{2}.\ttGlobal{iterators} :=
+        \ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{iterators};
+      process(\ttNontermN{iter-expr-wire-list}{1});
+
+      for i from 0 to \ttNontermN{iter-expr-wire-list}{2}.indexes.size \{
+        \ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapInput(
+          \ttNontermN{iter-expr-wire-list}{2}.indexes[i], sub_wires);
+      \}
+    \}
+
+    \ttNontermN{directive-list}{1}.\ttGlobal{state} := state(
+      \ttGlobal{wires} := sub_wires,
+      \ttGlobal{iterators} := map());
+    
+    process(\ttNontermN{directive-list}{1});
+
+    for i from 0 to sub_wires.outputs.size \{
+      sub_wires.retrieveResource(i);
+    \}
+
+    fail_if(\ttNontermN{directive-list}{1}.instanceCount != \ttNontermN{numeric-literal}{1}.value);
+    fail_if(\ttNontermN{directive-list}{1}.shortWitnessCount != \ttNontermN{numeric-literal}{2}.value);
+    \ttNontermN{iter-expr-anon-function}{0}.instanceCount := \ttNontermN{numeric-literal}{1}.value;
+    \ttNontermN{iter-expr-anon-function}{0}.shortWitnessCount := \ttNontermN{numeric-literal}{2}.value;
+  \}
+  evaluation \{
+    sub_instance := stream();
+    for i from 0 to function.instanceWireCount \{
+      fail_if(\ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{instance}.size == 0);
+      sub_instance.put(\ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{instance}.pop());
+    \}
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{instance} := sub_instance;
+    
+    sub_shortWitness := stream();
+    for i from 0 to function.shortWitnessWireCount \{
+      fail_if(\ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.size == 0);
+      sub_shortWitness.put(
+        \ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.pop());
+    \}
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{shortWitness} := sub_shortWitness;
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{switchActive} :=
+      \ttNontermN{iter-expr-anon-function}{0}.\ttGlobal{state}.\ttGlobal{switchActive};
+
+    process(\ttNontermN{directive-list}{1});
+
+    fail_if(sub_instance.size != 0);
+    fail_if(sub_shortWitness.size != 0);
+  \}
+\end{alltt}
+
+\subsection{Relation: Switch-Case Statements}\label{switch_case_text}
+The switch-case emulates branching in  a circuit by selecting the correct result and discarding the remaining results.
+Concretely, each case will assign ``dummy outputs'', and during evaluation, when a case is selected, its ``dummy'' outputs are copied onto the actual output wires.\\
+
+It also has checks to assure that each case is unique and that the output wires are assignable during the \textit{resource validity} phase.
+During the \textit{evaluation validity} phase, it checks that one of the cases is indeed selected.
+For instance and short witness streams, the reference behavior is to duplicate the streams, demonstrating that a case-statement consumes as many values as the maximum of its case implementations.
+There should exist ``stream rewind'' and ``input wire rewrite'' (outlined in section \ref{multiplexing}) techniques to achieve the same semantic.\\
+
+\begin{alltt}\ttSyn
+  \ttNontermN{switch-statement}{0} ::= [ \ttNontermN{wire-list}{1} `<-' ]?
+                          `@switch' `(' \ttNontermN{wire-number}{1} `)'
+                          [ `@case' \ttNontermN{field-literal}{1...n} `:'
+                            \ttNontermN{case-function}{1...n}
+                          ]+
+                          `@end'\ttSem
+  resource \{
+    fail_if(!\ttGlobal{SwitchCaseToggle});
+
+    \ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveResource(\ttNontermN{wire-number}{1}.index);
+
+    for i from 0 to \ttNontermN{wire-list}{1}.indexes.size \{
+      \ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertResource(
+        \ttNontermN{wire-list}{1}.indexes[i]);
+    \}
+
+    caseSelectors = set();
+    for i from 1 to n \{
+      fail_if(\ttNontermN{field-literal}{i}.value >= \ttGlobal{p});
+      fail_if(caseSelectors.has(\ttNontermN{field-literal}{i}.value));
+      caseSelectors.put(\ttNontermN{field-literal}{i}.value)
+
+      \ttNontermN{case-function}{i}.\ttGlobal{state} := \ttNontermN{switch-statement}{0}.\ttGlobal{state};
+      \ttNontermN{case-function}{i}.outputSize = \ttNontermN{wire-list}{1}.indexes.size;
+      
+      process(\ttNontermN{case-function}{i});
+    \}
+    
+    \ttNontermN{switch-statement}{0}.instanceCount :=
+      maximum(\ttNontermN{case-function}{1...n}.instanceCount);
+    \ttNontermN{switch-statement}{0}.shortWitnessCount :=
+      maximum(\ttNontermN{case-function}{1...n}.instanceCount);
+  \}
+  evaluation \{
+    instance_dup := list();
+    for i from 0 to \ttNontermN{switch-statement}{0}.instanceCount \{
+      instance_dup.append(
+        \ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{instance}.pop());
+    \}
+
+    shortWitness_dup := list();
+    for i from 0 to \ttNontermN{switch-statement}{0}.shortWitnessCount \{
+      shortWitness_dup.append(
+        \ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{shortWitness}.pop());
+    \}
+
+    matchedCase = false;
+    selectValue = \ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{wires}.retrieveEvaluation(
+      \ttNontermN{wire-number}{1}.value);
+
+    for i from 1 to n \{
+      sub_instance := stream();
+      for j from 0 to \ttNontermN{case-function}{i}.instanceCount \{
+        sub_instance.push(instance_dup[j]);
+      \}
+
+      sub_shortWitenss := stream();
+      for j from 0 to \ttNontermN{case-function}{i}.shortWitnessCount \{
+        sub_shortWitness.push(shortWitness_dup[j]);
+      \}
+      
+      \ttNontermN{case-function}{i}.sub_instance := sub_instance;
+      \ttNontermN{case-function}{i}.sub_shortWitness := sub_shortWitness;
+
+      if(selectValue == \ttNontermN{field-literal}{i}.value) \{
+        matchedCase := true;
+        \ttNontermN{case-function}{i}.sub_switchActive :=
+          \ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{switchActive};
+
+        process(\ttNontermN{case-function}{i});
+
+        for j from 0 to \ttNontermN{wire-list}{1}.size \{
+          \ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{wires}.insertEvaluation(
+            \ttNontermN{wire-list}{1}.indexes[j], \ttNontermN{case-function}{i}.outputs[j]);
+        \}
+      \}
+      else \{
+        \ttNontermN{case-function}{i}.sub_switchActive := false;
+        process(\ttNontermN{case-function}{i});
+      \}
+    \}
+    fail_if(\ttNontermN{switch-statement}{0}.\ttGlobal{state}.\ttGlobal{switchActive} && !matchedCase);
+  \}\ttSyn
+
+  \ttNontermN{case-function}{0} ::= \ttNontermN{case-function-invoke}{1} | \ttNontermN{case-anon-function}{1}\ttSem
+  resource \{
+    match \{
+      \ttNontermN{case-function-invoke}{1}: \{
+        \ttNontermN{case-function-invoke}{1}.\ttGlobal{state} := \ttNontermN{case-function}{0}.\ttGlobal{state};
+        \ttNontermN{case-function-invoke}{1}.outputSize := \ttNontermN{case-function}{0}.outputSize;
+
+        process(\ttNontermN{case-function-invoke}{1});
+
+        \ttNontermN{case-function}{0}.instanceCount :=
+          \ttNontermN{case-function-invoke}{1}.instanceCount;
+        \ttNontermN{case-function}{0}.shortWitnessCount :=
+          \ttNontermN{case-function-invoke}{1}.shortWitnessCount;
+      \}
+      \ttNontermN{case-anon-function}{1}: \{
+        \ttNontermN{case-anon-function}{1}.\ttGlobal{state} := \ttNontermN{case-function}{0}.\ttGlobal{state};
+        \ttNontermN{case-anon-function}{1}.outputSize := \ttNontermN{case-function}{0}.outputSize;
+
+        process(\ttNontermN{case-anon-function}{1});
+
+        \ttNontermN{case-function}{0}.instanceCount :=
+          \ttNontermN{case-anon-function}{1}.instanceCount;
+        \ttNontermN{case-function}{0}.shortWitnessCount :=
+          \ttNontermN{case-anon-function}{1}.shortWitnessCount;
+      \}
+    \}
+  \}
+  evaluation \{
+    match \{
+      \ttNontermN{case-function-invoke}{1}: \{
+        \ttNontermN{case-function-invoke}{1}.sub_instance :=
+          \ttNontermN{case-function}{0}.sub_instance;
+        \ttNontermN{case-function-invoke}{1}.sub_shortWitness :=
+          \ttNontermN{case-function}{0}.sub_shortWitness;
+        \ttNontermN{case-function-invoke}{1}.sub_switchActive :=
+          \ttNontermN{case-function}{0}.sub_switchActive;
+
+        process(\ttNontermN{case-function-invoke}{1});
+
+        \ttNontermN{case-function}{0}.outputs :=
+          \ttNontermN{case-anon-function}{1}.outputs;
+      \}
+      \ttNontermN{case-anon-function}{1}: \{
+        \ttNontermN{case-anon-function}{1}.sub_instance :=
+          \ttNontermN{case-function}{0}.sub_instance;
+        \ttNontermN{case-anon-function}{1}.sub_shortWitness :=
+          \ttNontermN{case-function}{0}.sub_shortWitness;
+        \ttNontermN{case-anon-function}{1}.sub_switchActive :=
+          \ttNontermN{case-function}{0}.sub_switchActive;
+
+        process(\ttNontermN{case-function-invoke}{1});
+
+        \ttNontermN{case-function}{0}.outputs :=
+          \ttNontermN{case-anon-function}{1}.outputs;
+      \}
+    \}
+  \}\ttSyn
+
+  \ttNontermN{case-function-invoke}{0} ::= `@call' `(' \ttNontermN{label}{1}
+                           [ `,' \ttNontermN{wire-list}{1} ]? `)' `;'\ttSem
+  recursion_check \{
+    fail_if(!\ttGlobal{functionsSet}.has(\ttNontermN{label}{1}));
+  \}
+  resource \{
+    fail_if(!\ttGlobal{FunctionToggle});
+    fail_if(!\ttGlobal{functionsMap}.has(\ttNontermN{label}{1}));
+    
+    function := \ttGlobal{functionsMap}.get(\ttNontermN{label}{1});
+    
+    fail_if(function.outputWireCount != \ttNontermN{case-function-invoke}.outputSize);
+    
+    sub_wires := wireset();
+    sub_wires.mapDummies(\ttNontermN{case-function-invoke}{0}.outputSize);
+    
+    if(\ttNontermN{wire-list}{1}) \{
+      for i from 0 to \ttNontermN{wire-list}{1}.indexes.size \{
+        \ttNontermN{case-function-invoke}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapInput(
+          \ttNontermN{wire-list}{1}.indexes[i], sub_wires);
+      \}
+    \}
+
+    fail_if(sub_wires.inputs.size != function.inputWireCount);
+    
+    function.body.\ttGlobal{state} := state(
+      \ttGlobal{wires} := sub_wires,
+      \ttGlobal{iterators} := map());
+
+    process(function.body);
+
+    for i from 0 to sub_wires.outputs.size \{
+      sub_wires.retrieveResource(i);
+    \}
+    
+    fail_if(function.body.instanceCount != function.instanceCount);
+    fail_if(function.body.shortWitnessCount != function.shortWitnessCount);
+    \ttNontermN{case-function-invoke}{0}.instanceCount := function.instanceCount;
+    \ttNontermN{case-function-invoke}{0}.shortWitnessCount := function.shortWitnessCount;
+  \}
+  evaluation \{
+    function := \ttGlobal{functionsMap}.get(\ttNontermN{label}{1});
+    
+    function.body.\ttGlobal{state}.\ttGlobal{instance} := \ttNontermN{case-function-invoke}{0}.sub_instance;
+    function.body.\ttGlobal{state}.\ttGlobal{shortWitness} :=
+      \ttNontermN{case-function-invoke}{0}.sub_shortWitness;
+    function.body.\ttGlobal{state}.\ttGlobal{switchActive} :=
+      \ttNontermN{case-function-invoke}{0}.sub_switchActive;
+
+    process(function.body);
+    
+    fail_if(\ttNontermN{case-function-invoke}{0}.sub_instance.size != 0);
+    fail_if(\ttNontermN{case-function-invoke}{0}.sub_shortWitness.size != 0);
+    
+    \ttNontermN{case-function-invoke}{0}.outputs := function.body.\ttGlobal{state}.\ttGlobal{wires}.outputs;
+  \}\ttSyn
+
+  \ttNontermN{case-anon-function}{0} ::= `@anon_call' `('
+                           [ \ttNontermN{wire-list}{1} `,' ]?
+                           `@instance' `:'  \ttNontermN{numeric-literal}{1} `,'
+                           `@short_witness' `:' \ttNontermN{numeric-literal}{2} `)'
+                             \ttNontermN{directive-list}{1}
+                           `@end'\ttSem
+  resource \{
+    sub_wires := wireset();
+    sub_wires.mapDummies(\ttNontermN{case-anon-function}{0}.outputSize);
+    
+    if(\ttNontermN{wire-list}{1}) \{
+      for i from 0 to \ttNontermN{wire-list}{1}.indexes.size \{
+        \ttNontermN{case-anon-function}{0}.\ttGlobal{state}.\ttGlobal{wires}.remapInput(
+          \ttNontermN{wire-list}{1}.indexes[i], sub_wires);
+      \}
+    \}
+    
+    \ttNontermN{directive-list}{1}.\ttGlobal{state} := state(
+      \ttGlobal{wires} := sub_wires,
+      \ttGlobal{iterators} := map());
+
+    process(\ttNontermN{directive-list}{1});
+
+    for i from 0 to sub_wires.outputs.size \{
+      sub_wires.retrieveResource(i);
+    \}
+
+    fail_if(\ttNontermN{directive-list}{1}.instanceCount != \ttNontermN{numeric-literal}{1}.value);
+    fail_if(\ttNontermN{directive-list}{1}.shortWitnessCount != \ttNontermN{numeric-literal}{2}.value);
+    \ttNontermN{case-anon-function}{0}.instanceCount := \ttNontermN{numeric-literal}{1}.value;
+    \ttNontermN{case-anon-function}{0}.shortWitnessCount := \ttNontermN{numeric-literal}{1}.value;
+  \}
+  evaluation \{
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{instance} :=
+      \ttNontermN{case-function-invoke}{0}.sub_instance;
+    \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{shortWitness} :=
+      \ttNontermN{case-anon-function}{0}.sub_shortWitness;
+      \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{switchActive} :=
+      \ttNontermN{case-anon-function}{0}.sub_switchActive;
+
+    process(\ttNontermN{directive-list}{1});
+
+    fail_if(\ttNontermN{case-anon-function}{0}.sub_instance.size != 0);
+    fail_if(\ttNontermN{case-anon-function}{0}.sub_shortWitness.size != 0);
+
+    \ttNontermN{case-anon-function}{0}.outputs := \ttNontermN{directive-list}{1}.\ttGlobal{state}.\ttGlobal{wires}.outputs;
+  \}
+\end{alltt}

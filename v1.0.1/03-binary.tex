@@ -1,0 +1,663 @@
+\newpage
+\section{Binary Serialization (FlatBuffers)}\label{binary}
+
+\lstdefinestyle{fbslisting}{
+  belowcaptionskip=1\baselineskip,
+  breaklines=true,
+  frame=L,
+  xleftmargin=\parindent,
+  language=C,
+  showstringspaces=false,
+  basicstyle=\footnotesize\ttfamily,
+  keywordstyle=\bfseries\color{green!60!black},
+  commentstyle=\itshape\color{blue!70!black},
+  %identifierstyle=\color{blue},
+  stringstyle=\color{purple!80},
+  morekeywords={table,struct,union},
+  morekeywords=[2]{Message, Root, Directive,DirectiveSet,Wire,WireRange,WireListElementU, WireList, WireListElement, Value,Header, Relation, Instance,Witness, GateConstant,GateAssertZero,GateCopy,GateFree,GateInstance,GateWitness,GateAdd,GateMul,GateAddConstant,GateMulConstant,GateAnd,GateXor, GateNot,Function, GateCall, AbstractAnonCall, AbstractAnonCall,GateAnonCall,GateSwitch,CaseInvokeU,CaseInvoke,GateFor,ForLoopBody,IterExprWireNumber, IterExpr,IterExprConst,IterExprName,IterExprAdd,IterExprSub,IterExprMul,IterEXprDivConst,IterExprWireRange,IterExprWireListElementU, IterExprWireListElement,IterExprWireList,IterExprFunctionInvoke,IterExprAnonFunction, DirectiveSet},
+  keywordstyle={[2]\bfseries\color{orange!70!black}},
+  morekeywords=[3]{uint32,uint64,ubyte,string},
+  keywordstyle={[3]\bfseries\color{blue!60!green}},
+}
+
+\newcommand\fbs{c}
+%-------------------------
+
+\lstset{language=flatbuffer}
+\lstset{frame=none}
+
+The binary serialization of IR0 will be described here using the \href{https://google.github.io/flatbuffers/}{open-source FlatBuffers cross-platform serialization library}, originally developed by Google.
+FlatBuffers is a metaformat that specifies the superficial aspects of the syntax, such as representations of literals, structured data and arrays.
+It moreover supports formal schemas that concretely define what elements (e.g., structures and arrays) can appear in the specific format.
+FlatBuffers was chosen for the following reasons:
+
+\begin{itemize}
+  \item It offers an existing compact encoding of the format with efficient (de)serialization.
+  \item It is supported by a wide-range of community-based tools and libraries for the most common languages (and is also easy to parse from scratch).
+\end{itemize}
+
+The concrete FlatBuffers schema, which implements the abstract semantics summarized in Section~\ref{overview}.
+Each element of the FlatBuffer schema elements is described as isomorphic to the textual syntax in Section~\ref{text}, establishing a clear equivalence to the text format and the IR semantics. 
+\\
+
+Before looking at the specific messages and their syntax, let’s take a look at how circuits are interpreted in the FlatBuffers schema. Circuits are represented by following the simple design philosophy that ``every variable is the input or output of a gate''. \textsf{Wires} are defined as the main object of the schema, with wires specifying the connections between the gates such that each wire can be the input to or output of a gate. In most cases, it is both: the output of a preceding gate that becomes the input to the following connected gate. Wires can be reused across several gates, forming a topology. Variables are then assigned to wires as concrete values.\\
+
+As we will see in Section~\ref{sec:simple-gates}, to make the schema simpler to use, we made it so that different variable types that are inputs to the circuit (instance, witness and constant) will be used by assigning them to the output wire of a gate of that type (i.e.: constant variables are the output of a constant gate).\\
+
+When dealing with \href{https://google.github.io/flatbuffers/md\_\_schemas.html}{binaries and files in FlatBuffers}, we specify a file extension and identification constant. The constant is present at the beginning of all binary, FlatBuffers-based, SIEVE IR resource files or streams,  ensuring the user is reading the kind of file they are expecting. These are defined as such
+
+
+
+\begin{lstlisting}[style=fbslisting]
+    // When storing messages to files, this extension and
+    // identifier should be used.
+    file_extension "sieve";
+    file_identifier "siev"; // constant bytes for file identification
+\end{lstlisting}
+
+In general the attributes of a FlatBuffer \texttt{table} element are allowed to be \texttt{null} values.
+In the IR, except where noted, a null value is considered a \textit{syntax invalidity}.
+
+\subsubsection*{Resources as FBS Messages}
+
+As per the abstract syntax in Section~\ref{overview}, there are three message
+types that can be communicated through files or streams: \textsf{Instance},
+\textsf{Witness} and \textsf{Relation}. When streaming messages, the producer will always include the \textsf{Header} as part of the messages in order to transmit the semantics to the consumer. For this schema, the messages should be framed such that all messages must be prefixed by the size of the message, not including the prefix, as a 4-bytes little-endian unsigned integer.
+
+\begin{lstlisting}[style=fbslisting]
+    union Message {
+       Relation,
+       Instance,
+       Witness,
+    }
+\end{lstlisting}
+
+FlatBuffers allows you to parse the structures and messages from a concretely defined starting point, called the \texttt{root\_type}. We implemented it through the \textsf{Root} struct that calls a message.
+
+Due to 32-bit internal pointers, FlatBuffers have a 2GB limit on message size.
+Because of this we prefix each \texttt{Root} element with a 32-bit unsigned little-endian constant describing the length of the \texttt{Root} in bytes.
+These length, \texttt{Root} pairs may be repeated as many times as necessary so long as each \texttt{Root} has the same message type.
+
+\begin{lstlisting}[style=fbslisting]
+    // All message types are encapsulated in the FlatBuffers root table.
+    table Root {
+        message                 :Message;
+    }
+    root_type Root;
+\end{lstlisting}
+
+In order to maintain isomorphism with the text format, a few constraints are added to the \textit{syntactic validity} of such sequenced FlatBuffers.\\
+
+\begin{itemize}
+    \item The header, gate set and features of each must be identical.
+    \item The text syntax lists all function declarations ahead of directives in the top-level scope.
+    A FlatBuffer in sequence may not list additional function declarations if a prior FlatBuffer of the sequence already listed directives of the top-level scope.
+\end{itemize}
+
+\paragraph{Semantics in FlatBuffers.}
+As a structured format, the FlatBuffers schema provides a concrete, readable and typed syntax, ensuring part of the semantics of the IR around the types of the fields. However, it does not provide resource or evaluation validity as it is not a language. As explained in Section \ref{ir_validity}, there are three validation methods that need to be defined: \emph{syntactic validity}, which is mostly ensured by the structures and types of the schema provided; \emph{resource validity} and \emph{evaluation validity}, both of which are defined in section \ref{text} and summarized in this section.
+If definitions from section \ref{text} differ from summaries in this section, then section \ref{text} takes precedence.\\
+
+The validation of the circuit should never modify it, and should consider the circuit and its topology as a read-only parameter. In this section we provide both the syntax for the FlatBuffers schema, and in each subsection, a review of the semantic checks to be performed by the \emph{resource validity} and \emph{evaluation validity} checks.
+
+\subsection{Messages, Abstractions and Basic Types}\label{binary_abstractions}
+
+The four basic types in the FlatBuffers IR schema are
+\begin{itemize}
+    \item A \textsf{Directive} defines a concrete computation in the circuit
+    \item A \textsf{Wire} is a unique identifier and defines the flow of values through the computation
+    \item A \textsf{Value} is a field element and is to be assigned to a specific \textsf{Wire}.
+    \item An \textsf{IterExprWireNumber} is a type used uniquely within \emph{for loops} to allow computing expressions on values that differ per iteration of the loop. We call these \emph{iterators}.
+\end{itemize}
+
+Concretely, a \textsf{Directive} is the principal object of the schema, defining the concrete computation or directive on variables, and by extension, on value assignment of variables. A gate is defined by the \nameref{gateset}, as described in Section \ref{gateset}. Note that the \textsf{Directive} in concert with \textsf{DirectiveSet} form an isomorphism to \synNonterm{directive} from section \ref{structure_text}.
+
+\begin{lstlisting}[style=fbslisting]
+    table Directive {
+        directive      :DirectiveSet;
+    }
+\end{lstlisting}
+
+A relation is defined by connecting directives in some topological order through the use of \emph{wires}. Each \textsf{Wire} is referenced by a unique identifier, \texttt{id}, which can be assigned or empty (also after being freed). Every wire is the output of a gate and hence every variable can be seen as a wire. Note that the \texttt{Wire} table is equivalent to the \synNonterm{wire-number} element defined by appendix \ref{textblocks}
+
+\begin{lstlisting}[style=fbslisting]
+    table Wire {
+        id         :uint64;
+    }
+\end{lstlisting}
+
+In some cases, a reference to several consecutive wires is needed, so we use a range of identifiers as a \texttt{WireRange}. Note that the \texttt{WireRange} table is isomorphic to the \synNonterm{wire-range} element of section \ref{function_gate_text}.
+
+\begin{lstlisting}[style=fbslisting]
+    table WireRange {
+        first      :Wire;
+        last       :Wire;
+    }
+\end{lstlisting}
+
+In order to allow for any of the two types above, we build this union trait, as is common in FlatBuffers. It is equivalent, in combination with table \texttt{WireListElement}, to the \synNonterm{wire-list-element} from section \ref{function_gate_text}.
+
+\begin{lstlisting}[style=fbslisting]
+    union WireListElementU {
+        Wire,
+        WireRange,
+    }
+\end{lstlisting}
+
+Currently, the Rust implementation of Flatbuffers does not allow creation of
+an array structure from a \emph{union} of elements, hence we need to invoke the
+following trick: to wrap a the union with a table, as seen below. The \textsf{WireList} forms a compact list in which elements can be single wires or ranges of wires. the \textsf{WireList} is isomorphic to \synNonterm{wire-list} of section \ref{function_gate_text}.
+References to a \texttt{WireList} may be empty, but must not be \texttt{null}.
+
+\begin{lstlisting}[style=fbslisting]
+    table WireListElement {
+        element   :WireListElementU;
+    }
+
+    table WireList {
+        elements    :[WireListElement];
+    }
+\end{lstlisting}
+
+Later we will see directives which read values from input streams and assign their values to a specific wire. These input streams are sequences of input values, each of which is read sequentially. The type \textsf{Value} represents a field element as a vector of bytes, encoded least significant byte first. The \texttt{Value} is isomorphic to the \synNonterm{field-literal} of appendix \ref{textblocks}.
+A \texttt{Value} may have leading zeros, at the discretion of the IR producer.
+
+\begin{lstlisting}[style=fbslisting]
+    table Value {
+        value        :[ubyte];
+    }
+\end{lstlisting}
+
+\subsubsection*{Header Syntax \& Semantics}
+
+\paragraph{Header Syntax.} The \textsf{Header} struct, included in all message types, contains the basic information of the semantics of the witnessed statement. The \textsf{Header} table is isomorphic to the \synNonterm{header} element of section \ref{header_text}. Specifically, it contains
+
+\begin{itemize}
+  \item The \texttt{version}, of type string, specifies the concrete version of the IR being used and is formatted as a string based on the semantic versioning system explained in Section~\ref{overview}. In the FlatBuffers schema, this is for reference between the consumer and producer of the witnessed statement, as there is native backwards and forward compatibility with the formal schema.
+  \item The \texttt{field\_characteristic}, of type \textsf{Value}, which defines the underlying field modulus of the statement. Values in the vector \texttt{value} must be represented under this characteristic.
+  \item The \texttt{field\_degree}, which determines the extension degree of the field used. For IR v1.0.0 and before, the only allowed parameter value for the field extension is one (1). The parameter is added for the purpose of extensibility in future versions. The \texttt{field\_characteristic} is encoded least significant byte first.
+\end{itemize}
+
+
+
+\begin{lstlisting}[style=fbslisting]
+    table Header {
+       version              :string;
+       field_characteristic :Value;
+       field_degree         :uint32;
+    }
+\end{lstlisting}
+
+\paragraph{Header Semantics.} The following is a comprehensive list of the semantic checks to be performed around the header of the IR.
+\begin{itemize}
+    \item \textit{Versioning:} ensure that the version string has the correct format (e.g. matches the following regular expression ``\verb|^\d+.\d+.\d+$|'') as defined in the semantic versioning in Section~\ref{header_overview}.
+    \item \textit{Field characteristic:} ensure that the characteristic is strictly greater than 1 and is a prime.
+    \item \textit{Field degree:} ensure that the field degree is exactly 1.
+    \item \textit{Consistency:} as part of the \emph{evaluation validity}, ensure that the header within messages are coherent for a given circuit: (a) versions should be identical; (2) the field characteristic and the field degree should be the same.
+\end{itemize}
+
+\subsection{Inputs: Instance \& Witness}
+
+\paragraph{Instance Syntax.} The \textit{Instance} message transmits the assignments of the common inputs to the circuit, known by the prover and the verifier. The \textsf{Instance} table is isomorphic to the \synNonterm{instance} element from section \ref{ins_wit_text}.
+
+\begin{itemize}
+    \item The \texttt{header}, of type \textsf{Header}, is included for communicating the semantics between a producer and a consumer.
+    \item The \texttt{common\_inputs}, a vector of type \textsf{Value}, specify the public values assigned to wires that are \emph{inputs} to the circuit.  It must be non-null, but may be empty.
+\end{itemize}
+
+\begin{lstlisting}[style=fbslisting]
+    table Instance {
+       header               :Header;
+       common_inputs        :[Value];
+    }
+\end{lstlisting}
+
+\paragraph{Witness Syntax.}  The \textsf{Witness} represents a \emph{private} assignment of values to variables. It does not include variables already given in \textsf{Instance} nor the computable intermediary wires. The \texttt{Witenss} table is isomorphic to the \synNonterm{short-witness} element from section \ref{ins_wit_text}. Specifically, the
+ \textsf{Witness} includes
+
+\begin{itemize}
+    \item The \texttt{header}, of type \textsf{Header}, is included for communicating the semantics between a producer and a consumer.
+    \item The \texttt{short\_witness}, a vector of type \textsf{Value}, specify the private values assigned to wires that are \emph{inputs} to the circuit. It must be non-null, but may be empty.
+\end{itemize}
+
+\begin{lstlisting}[style=fbslisting]
+    table Witness {
+       header               :Header;
+       short_witness        :[Value];
+    }
+\end{lstlisting}
+
+\paragraph{Input Semantics (Instance \& Witness).} The following is a comprehensive list of the semantic checks to be performed around the instance and witness of the IR.
+
+\begin{itemize}
+    \item \textit{Assignment:} ensure that each \textsf{Instance} and \textsf{Witness} gate is given a \texttt{value} in the respective messages, that inputs are not defined more than once and that wires are not assigned a value more than once. It must also check that assignments are to wires in the instance or short witness wire ranges (see Section~\ref{ins_wit_overview}).
+    \item \textit{Encoding:} ensure that the \texttt{value} that each assignment is given actually encodes a field element that belongs to the underlying field, as defined by the \textsf{Header}. For degree 1 fields, it can be achieved by ensuring that the encoded value is strictly smaller than the field characteristic.
+\end{itemize}
+
+\subsection{Relation Syntax \& Semantics}
+
+The \textsf{Relation} resource encompasses the actual functionality of the circuit, which is represented by a set of gates. The \textsf{Relation} table is isomorphic to the \synNonterm{relation} element of section \ref{structure_text}. The \textsf{Relation} message contains
+\begin{itemize}
+    \item The \texttt{header}, of type \textsf{Header}, is included for communicating the semantics between a producer and a consumer.
+    \item The \texttt{gateset}, a string, represents the concatenation of the gates supported in the circuit. The \nameref{sec:common-gates} from Section~\ref{sec:common-gates} are assumed to be part of the circuit, so the gates to be included in this string are names the \nameref{sec:simple-gates} in Section~\ref{sec:simple-gates}. If only arithmetic or boolean gates are used, one can replace the gate names by either one of the cannonical gatesets, denoted by the strings \synFrag{arithmetic} and \synFrag{boolean}. Partial gate sets are also allowed as a restriction of the canonical ones as a concatenated string, comma-separated, of the individual gates \texttt{@add/@addc/@mul/@mulc} and \texttt{@and/@xor/@and} as a subset of the arithmetic and boolean canonical gateset, respectively.
+    \item The \texttt{features}, a string representing the concatenation of the different possible advanced features. The \texttt{@function}, \texttt{@for} and/or \texttt{@switch} toggles can be used to support any of the \textsf{Function}, \textsf{GateFor} and/or \textsf{GateSwitch} gates respectively. When no ``advanced" features are supported, the features toggle expects the \texttt{@simple} string.
+    \item The \texttt{functions}, an array of type \textsf{Function}, used as a declarative list of the custom functions to be used in the circuit. This array will contain all the function declarations used in the circuit. Within the circuit, only these \textsf{Functions} can be invoked.
+    This must be non-null, but may be empty. If this \texttt{Relation} message is one of a sequence, the \texttt{function}s array must be empty if a prior \texttt{directives} element was non-empty.
+    \item The \texttt{directives}, an array of type \textsf{Directive}, describing the actual directives that form the relation. Within a sequence of \texttt{Relation} messages, at least one message must have a non-empty \texttt{directives}.
+\end{itemize}
+
+\begin{lstlisting}[style=fbslisting]
+    table Relation {
+       header               :Header;
+       gateset              :string;
+       features             :string;
+       functions            :[Function];
+       directives           :[Directive];
+    }
+\end{lstlisting}
+
+\paragraph{Relation Semantics.} The following is a comprehensive list of the semantic checks to be performed around the relation resource of the IR.
+
+\begin{itemize}
+    \item \textit{Gateset validity:} ensure that defined gateset is either \synFrag{arithmetic} (or a subset) or \synFrag{boolean} (or a subset). If the gateset is \synFrag{boolean} (or a subset), one must check that the field characteristic is exactly 2. This is a \textit{resource validity} check.
+    \item \textit{Gate coherence:} ensure that the gates used in the relation are coherent with the \texttt{gateset}, as described above. This is a \textit{resource validity} check.
+    \item \textit{Constants:} ensure that the constants used are actual field elements, for both the assignment, or \texttt{@addc}/\texttt{@mulc} gates. This is a \textit{resource validity} check.
+    \item \textit{Wire consistency:} ensure that the input wires of gates map to an already existing identifier of a wire. Furthermore, one must enforce \textit{Single Static Assignment} by checking that the same wire is used only once as an output wire.  This is a \textit{resource validity} check.
+    \item \textit{Assertions:} ensure that each of the \texttt{assert\_zero} gates is satisfied.  This is an \textit{evaluation validity} check.
+    \item \textit{Consumed inputs:} Has components in both \textit{resource} and \textit{evalutaion validity}.
+    \begin{itemize}
+        \item For \textit{resource validity}, ensure that each function-gate (named or anonymous) consumes all the instances/witnesses it declares.
+        \item For \textit{Evaluation validity:} ensure that no leftover instances/witnesses remain after processing the top level scope. 
+    \end{itemize}
+\end{itemize}
+
+\subsection{List of Directives}\label{gateset}
+
+As explained above, each gate specifies an operation or an assignment of wires, hence defining a different fan-in and fan-out per gate. Starting in the IR v1.0.0, we differentiate between two types of gates. First, \emph{simple gates} are gates that perform a single operation (e.g.: addition, multiplication, etc.) and are only allowed to have fan-in 2 and fan-out 1, as per the Bristol format. Starting in IR v1.0.0, the standard allows the use of \emph{advanced gates}, which enable more complex computational structures such as loops, branches and generic functions. Advanced gates can be used as a way to reduce the size of the circuit by refactoring components that can be reused, preventing duplication.
+
+
+\subsubsection{Common Gate Directives}\label{sec:common-gates}
+
+The following gates are common to all circuit types given that they specify the sources and sinks of the circuits, or the inputs to the witnessed statement.
+Specifically, there are six of these gates:\\
+
+\begin{itemize}[label={}]
+  \item \textbf{Constant:} which output a constant value, assigned from the get go.
+    The \textit{constant} represents a field element encoded least significant byte first. The \textsf{GateConstant} table is isomorphic to the \synNonterm{assign} directive of section \ref{simple_gate_text}.
+
+    \begin{lstlisting}[style=fbslisting]
+        table GateConstant {
+           output      :Wire;
+           constant    :[ubyte];
+        }
+    \end{lstlisting}
+
+  \item \textbf{Assert:} which checks that the outputs assert to zero. The \textsf{GateAssertZero} table is isomorphic to the \synNonterm{assert-zero} directive of section \ref{simple_gate_text}.
+
+    \begin{lstlisting}[style=fbslisting]
+        table GateAssertZero {
+           input       :Wire;
+        }
+    \end{lstlisting}
+
+  \item \textbf{Copy:} which copies the value of the input wire onto the output wire. In some cases this may be very useful for optimizations and other reasons. The \textsf{GateCopy} table is isomorphic to the \synNonterm{copy} directive of section \ref{simple_gate_text}.
+
+    \begin{lstlisting}[style=fbslisting]
+        table GateCopy {
+           output      :Wire;
+           input       :Wire;
+        }
+    \end{lstlisting}
+
+  \item \textbf{Free:} which frees a set of wires from memory, allowing these identifiers to be reused for other instance or witness assignments. The \textsf{GateFree} table is isomorphic to the \synNonterm{delete-single} and \synNonterm{delete-range} directives of section \ref{simple_gate_text}.
+    \textsf{GateFree} defines a conditional structure, while \synNonterm{delete-single} and \synNonterm{delete-range} define similar structures as individual directives.
+    The \texttt{last} attribute may be null, indicating the \texttt{first} attribute carries equivalence to \synNonterm{delete-single}. If the \texttt{last} attribute is non-null, the \texttt{GateFree} carries equivalence to \synNonterm{delete-range}.
+
+    \begin{lstlisting}[style=fbslisting]
+        table GateFree {
+           // First wire ID to free.
+           first       :Wire;
+           // Last wire ID is optional. 
+           // Free the range [first; last] inclusive.
+           last        :Wire;
+        }
+    \end{lstlisting}
+
+  \item \textbf{Instance}: which reads a value from the instance input stream. The \textsf{GateInstance} and \textsf{GateWitness} tables collectively form an isomorphism to the \synNonterm{input} directive of section \ref{simple_gate_text}. \synNonterm{input} defines conditional structure, while \texttt{GateInstance} and \texttt{GateWitness} define similar structures as individual tables.
+
+    \begin{lstlisting}[style=fbslisting]
+        table GateInstance {
+           output      :Wire;
+        }
+    \end{lstlisting}
+
+  \item \textbf{Short Witness}: which reads a value from the short witness input stream.
+
+    \begin{lstlisting}[style=fbslisting]
+        table GateWitness {
+           output      :Wire;
+        }
+    \end{lstlisting}
+\end{itemize}
+
+\subsubsection{Simple Gate Directives}\label{sec:simple-gates}
+
+The following gates are of arithmetic nature, to be used with values in fields of a prime characteristic. These gates form the canonical \synFrag{arithmetic} gate set in the \textsf{Relation}.
+In \texttt{GateAddConstant} and \texttt{GateMulConstant} there is a \texttt{constant} attribute of array type.
+This carries a field element, in a byte-wise decomposition. Bytes are little end first, and may have leading zero bytes, same as the \texttt{Value} table of section \ref{binary_abstractions}.
+
+\begin{lstlisting}[style=fbslisting]
+    table GateAdd {
+       output      :Wire;
+       left        :Wire;
+       right       :Wire;
+    }
+    
+    table GateMul {
+       output      :Wire;
+       left        :Wire;
+       right       :Wire;
+    }
+    
+    table GateAddConstant {
+       output      :Wire;
+       input       :Wire;
+       constant    :[ubyte];
+    }
+    
+    table GateMulConstant {
+       output      :Wire;
+       input       :Wire;
+       constant    :[ubyte];
+    }
+\end{lstlisting}
+
+The following gates are of boolean nature, to be used with values in fields of \\
+characteristic $= 2$. These gates form the canonical \synFrag{boolean} gate set in the \textsf{Relation}.
+
+\begin{lstlisting}[style=fbslisting]
+    table GateAnd {
+       output      :Wire;
+       left        :Wire;
+       right       :Wire;
+    }
+    
+    table GateXor {
+       output      :Wire;
+       left        :Wire;
+       right       :Wire;
+    }
+    
+    table GateNot {
+       output      :Wire;
+       input       :Wire;
+    }
+\end{lstlisting}
+
+Together, \texttt{GateAdd}, \texttt{GateMul}, \texttt{GateAnd}, and \texttt{GateXor} form an isomorphism to \synNonterm{binary-gate} (``binary'' refers to the number of inputs) of section \ref{simple_gate_text}. This is because \synNonterm{binary-gate} has conditional structure, whereas these define the conditional structure as part of their table type.
+Similarly \texttt{GateAddConstant} and \texttt{GateMulConstant} form an isomorphism to \synNonterm{binary-const-gate}, and \texttt{GateNot} forms an isomorphism to \synNonterm{unary-gate}.
+
+\subsubsection{Feature: Functions Gate}\label{sec:function-gates}
+
+The function gate feature enables users to package a set of directives that can be identified by the backend as a specific function (sometimes referred to as \emph{custom gates}, potentially one that can be computed with backend-specific optimizations. Custom gates are instantiated by different modes of operation. The first is using the \textsf{Function} declaration together with the \textsf{GateCall} invocation.  This is the only way to use function gates as a stand-alone gate within a circuit (as long as the function is declared in the \texttt{function} array in the \textsf{Relation}.
+
+The \textsf{Function} table represents the definition and declaration of a function gate. It is isomorphic to \synNonterm{function-declare} of section \ref{function_gate_text}. The \textsf{Function} table includes
+\begin{itemize}
+    \item The \texttt{name}, a string that allows the \textsf{GateCall} to invoke the function by reference. This enables uniformity of the custom gate.
+    \item The \texttt{output\_count}, \texttt{input\_count}, \texttt{instance\_count} and \texttt{witness\_count}, all integers that allow to keep track of the number of outputs, inputs, instances and witnesses used in the function gate.
+    \item The \texttt{body}, an array of directives, which describe the exact computation of the function gate. The body can also be seen as a reference implementation of the specific function.
+    The \texttt{body} must be non-null and have length strictly greater than 0.
+\end{itemize}
+
+\begin{lstlisting}[style=fbslisting]
+    table Function {
+        // Declare a Function gate as a custom computation
+        name            :string;
+        output_count    :uint64;
+        input_count     :uint64;
+        instance_count  :uint64;
+        witness_count   :uint64;
+        body            :[Directive];
+    }
+\end{lstlisting}
+
+The \textsf{GateCall} represents the invocation of a function gate. It is isomorphic to \synNonterm{function-invoke} of section \ref{function_gate_text}. The \textsf{GateCall} table includes
+\begin{itemize}
+    \item The \texttt{name} of the function, a string that refers to the concrete function declaration. This reduces the size of the circuit by preventing multiple copies of the same sub-circuit.
+    \item The \texttt{output\_wires} and \texttt{input\_wires}, of type \textsf{WireList}, which are the specific wire identifiers to be used as inputs or outputs of the function gate. These identifiers are re-mapped to the internal scope to be used within the concrete directives, which hold references to generic wire identifiers.  
+\end{itemize}
+
+\begin{lstlisting}[style=fbslisting]
+    table GateCall {
+        // Invokes a previously defined Function gate
+        name              :string;
+        output_wires      :WireList;
+        input_wires       :WireList;
+    }
+\end{lstlisting}
+
+The \textsf{AbstractGateCall} is similar to the \textsf{GateCall} table, sharing most elements with it. It lacks the \texttt{output\_wires} attribute, allowing it to be used within scope of either a \textsf{GateFor} or a \textsf{GateSwitch}. This table is isomorphic to \synNonterm{case-function-invoke} of section \ref{switch_case_text}.
+
+\begin{lstlisting}[style=fbslisting]
+    table AbstractGateCall {
+        // Invokes a previously defined Function gate
+        name              :string;
+        input_wires       :WireList;
+    }
+\end{lstlisting}
+
+The second way to use a function gate is by invoking directly the following anonymous function gate, which plays the combined role of the \emph{declaration} and \emph{invocation}. Anonymous function gates cannot however be used explicitly within the body of the circuit, but within the body of either a \textsf{GateFor} or a \textsf{GateSwitch} instead.
+
+The \textsf{GateAnonCall} represents the invocation of an anonymous function gate. These are defined once at the place of their invocation. It is isomorphic to \synNonterm{anon-function} of section \ref{function_gate_text}. The contents are a combination of the \textsf{Function} and \textsf{GateCall}, except without the \texttt{name} string, since there is no referencing needed.
+
+\begin{lstlisting}[style=fbslisting]
+    table GateAnonCall {
+        output_wires    :WireList;
+        inner           :AbstractAnonCall;
+    }
+\end{lstlisting}
+
+Portions of the \textsf{GateAnonCall} are replaced with the \textsf{AbstractAnonCall} table, to share elements with the \textsf{AbstractAnonCall} which is isomorphic to \synNonterm{case-anon-function} of section \ref{switch_case_text}.
+The \texttt{subcircuit} attribute must be non-null and have length strictly greater than 0.
+
+\begin{lstlisting}[style=fbslisting]
+    table AbstractAnonCall {
+        input_wires     :WireList;
+        instance_count  :uint64;
+        witness_count   :uint64;
+        subcircuit      :[Directive];
+    }
+\end{lstlisting}
+
+\paragraph{Function gate semantics.}
+\begin{itemize}
+    \item \textit{Name labels:} ensure that the \texttt{name} string in the \textsf{Function} declaration is in compliance with the labeling defined in Appendix~\ref{textblocks} as \synNonterm{label}. This is a \textit{syntax validity} constraint.
+    \item \textit{Feature allowed:} ensure that the string \texttt{@function} is included in the feature toggle in the \textsf{Relation}. This is a \textit{resource validity} constraint.
+    \item \textit{Wiring consistency:} ensure that the size of the \texttt{input\_wires} and \texttt{output\_wires} arrays in the \textsf{GateCall} is the same as the \texttt{input\_count} and the \texttt{output\_count} in the \textsf{Function} declaration, respectively. This is a \textit{resource validity} constraint. 
+    \item As a\textit{resource validity} constraint, recursion is prohibited by requiring each nested function call is either anonymous or to a prior defined function.
+\end{itemize}
+
+\subsubsection{Feature: Switch-Case Statements}\label{sec:switch-gate}
+The switch-case statements enable circuits to represent conditional branching within the relation, in a way that enables backends to compute a single branch without revealing which one. This means that 
+The \texttt{GateSwitch} table is isomorphic to the \synNonterm{switch-statement} directive of section \ref{switch_case_text}, while \texttt{CaseInvoke} and \texttt{CaseInvokeU} collectively form an isomrphism to \synNonterm{case-function} also from section \ref{switch_case_text}. The \textsf{GateSwitch} table includes
+\begin{itemize}
+    \item The \texttt{condition} element, of type \textsf{Wire}, which carries the value that determines which branch is taken.
+    \item The \texttt{output\_wires}, of type \textsf{WireList}, specify the wires to be used as the output of the switch gate.
+    \item The branch \texttt{cases}, an array of values used to match with the condition element and decide which branch is to be taken. This array must be non-null and have length strictly greater than zero.
+    \item The \texttt{branches}, an array of \textsf{CaseInvoke} (as defined below), which contains the set of all possible branches and the sub-circuits that belong to that computation. This array must be non-null and have the same length as the \texttt{cases} attribute.
+\end{itemize}
+
+\begin{lstlisting}[style=fbslisting]   
+    table GateSwitch {
+        condition         :Wire;
+        output_wires      :WireList;
+        cases             :[Value];
+        branches          :[CaseInvoke];
+    }
+\end{lstlisting}
+
+The following are helper tables that enable the use of a two-dimensional array of directives in the body of the for loop, by invoking either a \textsf{AbstractGateCall} or a \textsf{AbstractAnonCall}.
+
+\begin{lstlisting}[style=fbslisting]
+    union CaseInvokeU {
+        AbstractGateCall,
+        AbstractAnonCall,
+    }
+    
+    table CaseInvoke {
+        invocation  :CaseInvokeU;
+    }
+\end{lstlisting}
+
+\paragraph{Switch gate semantics.}
+\begin{itemize}
+    \item \textit{Condition matching:} ensure that the \texttt{condition} wire matches exactly one of the \texttt{cases} values. There is no \emph{default} branch.
+    \item \textit{Feature allowed:} ensure that the string \texttt{@switch} is included in the feature toggle in the \textsf{Relation}.
+\end{itemize}
+
+
+\subsubsection{Feature: For Loops}\label{sec:for-loops}
+
+The \textsf{GateFor} provides circuits with the functionality of \emph{for loops}, enabling the iteration over the same block of computation without repeating the block itself. The \texttt{GateFor} table and \texttt{ForLoopBody} union collectively form an isomorphism to \synNonterm{for-loop} of section \ref{for_loops_text}.
+The \texttt{ForLoopBody} union represents conditional structure within the \synNonterm{for-loop} element. The \textsf{GateFor} table contains
+
+\begin{itemize}
+    \item The \texttt{outputs}, a \textsf{WireList} that references the outputs of the for loop.
+    \item The \texttt{iterator}, a string denoting the name of the iterator to be used within the iterator expressions in the \textsf{ForLoopBody} below. It must have the same form as \synNonterm{label}.
+    \item The range of the iterator denoted by \texttt{first} and \texttt{last}, inclusive.
+    \item The \texttt{body} of the loop over which the iterations take place.
+\end{itemize}
+
+
+\begin{lstlisting}[style=fbslisting]
+    table GateFor {
+      outputs     :WireList;
+      iterator    :string;
+      first       :uint64;
+      last        :uint64;
+      body        :ForLoopBody;
+    }
+\end{lstlisting}
+
+\begin{lstlisting}[style=fbslisting]
+     union ForLoopBody {
+       IterExprFunctionInvoke,
+       IterExprAnonFunction
+     }       
+\end{lstlisting}
+
+We now define the \emph{iterators} and \emph{iterator expressions}. The \textsf{IterExprWireNumber} is a type used uniquely within \emph{for loops} to allow computing expressions on values that differ per iteration of the loop. The \texttt{IterExprWireNumber} is equivalent to the \synNonterm{iter-expr-wire-number} of section \ref{for_loops_text}.
+
+\begin{lstlisting}[style=fbslisting]
+    table IterExprWireNumber {
+        value       :IterExpr;
+    }
+\end{lstlisting}
+
+Throughout this section we refer to these as \emph{iterators} or \emph{iterator expressions}. The following structures form simple arithmetic expressions which dereference wires using for-loop iterators. The \texttt{IterExpr} union and its members form an isomorphism to the \synNonterm{iter-expr} element of section \ref{for_loops_text}.
+
+\begin{lstlisting}[style=fbslisting]
+    union IterExpr {
+        IterExprConst,
+        IterExprName,
+        IterExprAdd,
+        IterExprSub,
+        IterExprMul,
+        IterExprDivConst,
+    }
+
+    // Constant value in an expression
+    table IterExprConst { value :uint64; }
+    // Named loop-iteration
+    table IterExprName { name : string; }
+    // Sum of two expressions
+    table IterExprAdd { left :IterExprWireNumber; right :IterExprWireNumber; }
+    // Difference of two expressions
+    table IterExprSub { left :IterExprWireNumber; right :IterExprWireNumber; }
+    // Product of two expressions
+    table IterExprMul { left :IterExprWireNumber; right :IterExprWireNumber; }
+    // Division of an expression by a constant
+    table IterExprDivConst { numer :IterExprWireNumber; denom :uint64; }
+\end{lstlisting}
+
+As a named string, the iterator is referenced in the computation. This is equivalent to naming a specific identifier in memory that has a mutable value assigned to it. The allowed expressions are addition, substraction and multiplication of two iterators, whether named strings or constant values, as well as division of a (potentially) named iterator and a constant value.
+
+In a similar fashion to the \textsf{WireRange} above, we provide the following structures to enable support of compact lists using iterators. The \textsf{IterExprWireRange} table, the \textsf{IterExprWireListElementU} and \textsf{IterExprWireListElement} tables, and the \textsf{IterExprWireList} table form isomorphisms to the \synNonterm{iter-expr-wire-list-range} element, the \synNonterm{iter-expr-wire-list-element} element, and the \synNonterm{iter-expr-wire-list} element, respectively, all from section \ref{for_loops_text}. The \synNonterm{iter-expr-wire-list-single} has no FlatBuffer isomorphism, as it is simply a decoration for illustration of semantics. The \texttt{elements} attribute of \texttt{IterExprWireList} must be non-null but may be empty.
+
+\begin{lstlisting}[style=fbslisting]
+    table IterExprWireRange {
+        first :IterExprWireNumber;
+        last  :IterExprWireNumber;
+    }
+
+    union IterExprWireListElementU {
+        IterExprWireNumber,
+        IterExprWireRange,
+    }
+
+    table IterExprWireListElement {
+        element     :IterExprWireListElementU;
+    }
+
+    table IterExprWireList {
+        elements    :[IterExprWireListElement];
+    }
+\end{lstlisting}
+
+The following describe the concrete \texttt{body} types allowed within the \textsf{GateFor}. These are equivalent to the anonymous functions described above, except that they also allow for iterator expressions, as needed for the for loops, as described in Section~\ref{loop_overview}. The \textsf{IterExprFunctionInvoke} table is isomorphic to \synNonterm{iter-expr-function-invoke} and the \textsf{IterExprAnonFunction} table is isomorphic to \synNonterm{iter-expr-anon-function}, both of section \ref{for_loops_text}.
+The \texttt{body} attribute of \texttt{IterExprAnonFunction} must be non-null and non-empty.
+
+\begin{lstlisting}[style=fbslisting]
+    table IterExprFunctionInvoke {
+      name     :string;
+      outputs  :IterExprWireList;
+      inputs   :IterExprWireList;
+    }
+\end{lstlisting}
+
+\begin{lstlisting}[style=fbslisting]
+    table IterExprAnonFunction {
+      outputs          :IterExprWireList;
+      inputs           :IterExprWireList;
+      instance_count   :uint64;
+      witness_count    :uint64;
+      body             :[Directive];
+    }
+\end{lstlisting}
+
+\paragraph{For loop semantics.}
+\begin{itemize}
+    \item \textit{Feature allowed:} ensure that the string \texttt{@for} is included in the feature toggle in the \textsf{Relation}. This is a \textit{resource validity} check.
+    \item \textit{Iterator scoping:} ensure that the loop iterator must be in lexical scope as part of the resource validity.
+    \item \textit{Output consistency:} ensure that each iterations outputs are distinct, and the union of all iteration's outputs are the same as the loops outputs.
+\end{itemize}
+
+
+\subsubsection*{Directives List}
+
+All of the directives that can be used as gates in the circuit are referenced as part of a union of gates called the FlatBuffers \textsf{DirectiveSet}. We differentiate this directive set from the string type in the \textsf{Relation} in that this one is specific to FlatBuffers and defines all the possible gates that can be used in circuits, as part of the schema; whereas the \texttt{gateset} in the \textsf{Relation} is specific to a circuit instance and is used for the semantics of the circuit itself. 
+
+The \texttt{DirectiveSet} union is isomorphic to \synNonterm{directive} of section \ref{structure_text} when combined with the table \texttt{Directive} from \ref{binary_abstractions}. There is no direct isomorphism to the \synNonterm{directive-list} from \ref{structure_text}, however an array, \texttt{[Directive]}, takes its place at each occurrence.
+
+\begin{lstlisting}[style=fbslisting]
+    union DirectiveSet {
+       GateConstant,
+       GateAssertZero,
+       GateCopy,
+       GateAdd,
+       GateMul,
+       GateAddConstant,
+       GateMulConstant,
+       GateAnd,
+       GateXor,
+       GateNot,
+       GateInstance,
+       GateWitness,
+       GateFree,
+       GateCall,
+       GateAnonCall,
+       GateSwitch,
+       GateFor,
+    }
+\end{lstlisting}
+

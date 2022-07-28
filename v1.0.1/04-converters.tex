@@ -1,0 +1,92 @@
+
+\section{Suggested Feature Reductions}\label{flattening}
+
+The SIEVE IR allows three (3) sub-scope features which may be disabled during statement generation.
+Although a backend may prefer that certain features be disabled, this may not always be the case.
+This section outlines procedures and guidelines for a backend to reduce an unwanted feature to wanted features.
+The procedures given here assume that the circuit is semantically valid as described in section \ref{text}, and does not make any effort to warn about invalidities.\\
+
+As a reminder, when any of the sub-scope features are enabled, the high order wire numbers ($2^{63}$ through $2^{64}-1$) are reserved as ``ephemeral'' wires -- for the backend to use.
+This section makes heavy use of these ``ephemeral'' wires.\\
+
+\subsection{Inlining Function Gates}\label{inlining}
+The reduction for a function-gate is to ``inline'' it, or copy its body into the body of the caller.
+Where a function gate calls other function gates, it may be most optimal to work from the innermost function gate to the outer most.
+Here is the recommended procedure for inlining a single function gate.\\
+
+\begin{enumerate}
+    \item Copy the body of the function gate into the body of the caller.
+    \item For each wire mentioned in the copied body:
+    \begin{enumerate}
+        \item If the wire is one of the function gate's outputs or inputs, replace it with the corresponding wire from the calling scope.
+        \item If the wire is local to the function gate, replace its assignment with an ephemeral wire.
+        Then track the association between local and ephemeral for replacing the wires uses as gate inputs.
+    \end{enumerate}
+    \item When the end of the function gate's body is reached, each ephemeral wire should be deleted.
+\end{enumerate}
+
+\subsection{Unrolling For Loops}\label{unrolling}
+Since a for loop's number of repetitions may be calculated statically, its body may be ``unrolled'', or repeated the correct number of times.
+Since for loops may be nested, this procedure must be recurse to remove the loop iterator from iterator expressions within its body.\\
+
+\begin{enumerate}
+    \item The number of repetitions may be calculated as \texttt{last - first + 1}.
+    \item The for loop should be replaced by number of repetitions many invocations of the loop's body (the body is defined to be a function gate invocation).
+    \item The input and output lists of each function gate contain iterator expressions, instead of wire numbers.
+    Each of these expressions must be evaluated against this loop's, and any containing loops', iterator(s).
+    \item If the body of the loop is an anonymous function gate, then the unrolling process must recurse into the function gate's body, passing its own iterator and its containing loop's iterators into the function gate.
+    Named function gate invocations do not require checking, because they do not have access to containing loop's iterators.
+    \item within the recursed body, the bodies of anonymous function and of switch-case statements must be checked recursively.
+\end{enumerate}
+
+Once the unrolling procedure is complete, loop body functions may be inlined using the procedure described in section \ref{inlining}.\\
+
+\subsection{Multiplexing Switch-Case Statements}\label{multiplexing}
+Flattening a switch-case statement should be a simple matter of multiplexing the outputs of of each case.
+With the \textit{Boolean gate set} this is a simple matter.
+For the \textit{arithmetic gate set} a multiplexer is described here.
+Complications arise due to directives with side-effects, namely \texttt{@assert\_zero}, \texttt{@instance}, and \texttt{@short\_witness}.
+
+\begin{enumerate}
+    \item Using the switch wire's value, $w$, create a selector bit, $s_c$, for each case, $c$, $s_c = 1 - (w-c)^{p-1} \bmod\ p$.
+    This works because of \href{https://en.wikipedia.org/wiki/Fermat%27s_little_theorem}{Fermat's Little Theorem}.
+    \item Replace each case's output wires with ephemeral wires.
+    \item Multiply each case's ephemeral wires by $s_c$.
+    \item Sum the output wires across each case to produce the final output wires.
+    \item Assert that the sum of all $s_c$ is exactly 1, otherwise either no case was selected, or a duplicated case was selected.
+\end{enumerate}
+
+The \texttt{@assert\_zero} directive must be disabled in non-selected cases.
+This should be achievable by replacing each one with a function-gate output, and multiplexing these ``assert outputs'' from each case into a single \texttt{@assert\_zero} directive.
+This suggested procedure may be applied recursively from the bottom up to handle nested switch-cases.\\
+
+\begin{enumerate}
+    \item If the case's function is named and used elsewhere, duplicate it, along with all the named functions which it invokes, if they are used elsewhere.
+    \item Count the number of \texttt{@assert\_zero} directives within the case, including those in function-invocations and for-loops (if this procedure is applied from the bottom up, there should be no sub-switch-case statements).
+    \item Add that many additional outputs to the case using ephemeral wires.
+    \item Within the case's body, as well as functions invocations and for loops within the body, replace \texttt{@assert\_zero} directives with copy directives to the additional outputs.
+    \item Once all cases are completed, multiplex the maximum number of additional outputs, into \texttt{@assert\_zero} directives, omitting values from the multiplexer where one case has fewer additional wires than another.
+\end{enumerate}
+
+The \texttt{@instance} and \texttt{@short\_witness} directives consume values from streams.
+The semantics of a switch-case statement demand that it consumes as many values from each stream as the maximum consumption of its cases.
+In order to flatten this behavior, we consume all stream values ahead of the cases, and pass them in as input wires.
+The following procedure should be applied once for each of the \texttt{@instance} and \texttt{@short\_witness}.\\
+
+\begin{enumerate}
+    \item Find the maximum consumption.
+    \item Consume this many values from the stream as ephemeral wires.
+    \item If necessary duplicated each case's body, and replace its stream usage count with additional input wires.
+    \item Replace each usage of the stream directive with a copy directive.
+    \item Renumber local wires to account for additional input wires.
+\end{enumerate}
+
+As a late addition to this specification, the following scenarios may cause the automated translation to multiplexers to fail.
+Both scenarios involve nesting for-loops within switch-statements.
+
+\begin{enumerate}
+    \item If a loop traverses a range of wires which starts in the output or input range and continues into the input or local range, the automated insertion additional inputs or outputs will cause disruptions in loop's traversal range.
+    \item It is possible to construct a useful loop with varying number of output-wires on each iteration, so long as the loop has no input-wires. However when converting instances/witneses to input-wires this loop is no-longer valid.
+\end{enumerate}
+
+In both of these scenarios, the correct behavior would be maintained by unrolling the loop before multiplexing a surrounding switch.

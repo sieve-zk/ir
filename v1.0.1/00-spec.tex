@@ -1,0 +1,408 @@
+\documentclass[12pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[export]{adjustbox}
+\usepackage[title,titletoc]{appendix}
+
+\usepackage{amssymb,amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\usepackage{tabularx}
+\usepackage{ltablex}
+\usepackage{alltt}
+\usepackage{listings}
+\usepackage{enumitem}
+
+% TODO: this package is for strikeout, remove after editing is done.
+\usepackage[normalem]{ulem}
+
+\input{people.tex}
+
+\definecolor{InternalLinkColor}{HTML}{282888}
+\definecolor{ExternalLinkColor}{HTML}{3333BB}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=InternalLinkColor,
+  urlcolor=ExternalLinkColor
+}
+
+\lstdefinelanguage{ir}
+{
+  morekeywords={version,field,characteristic,degree,instance,short_witness,relation,gate_set,features,@begin,@end,@function,@out,@in,@call,@anon_call,@for,@first,@last,@switch,@case},
+  morekeywords=[2]{@add,@addc,@mul,@mulc,@xor,@and,@not,@assert_zero,@instance,@short_witness,@delete},
+  keywordstyle={[2]\it},
+  morecomment=[l]{//}
+}
+
+\lstdefinelanguage{flatbuffer}
+{
+  morekeywords={table,struct,union},
+  morekeywords=[2]{uint32,uint64,ubyte,string},
+  keywordstyle={[2]\it}
+}
+
+\definecolor{SyntaxGreen}{HTML}{116611}
+\definecolor{SemanticPurple}{HTML}{550077}
+
+\renewcommand{\familydefault}{\sfdefault}
+
+\title{SIEVE Intermediate Representation}
+\author{See Section \ref{contributors} for list of \nameref{contributors}}
+\date{Last Updated: 2022-04-29}
+
+\begin{document}
+\maketitle
+
+\section*{Identification and History}\label{history}
+
+\begin{tabularx}{\textwidth}{|p{1in}|p{1in}|p{4in}|}
+  \hline
+  \textbf{Version} & \textbf{Date} & \textbf{Notable Changes} \\
+  \hline
+  0.1.0 & 2020-09-19 & Initial version as proposed jointly by WizKit and FROMAGER teams on DARPA SIEVE. \\
+  \hline
+  0.1.1
+  & 2020-12-16 & A number of bugfixes on the prior version.
+  \begin{itemize}
+    \item Fix typographical errors and omissions.
+    \item Add checks for matching header, \texttt{num\_wires}, and etc., across multiple resources.
+    \item Eliminate unused type-checking and arity-checking attributes from the attribute grammar, because IR0 has only one meaningful type.
+    \item Add \texttt{num\_wires} to the instance and witness in the text and binary grammars (sections \ref{text} and \ref{binary}).
+  \end{itemize} \\
+  \hline
+  0.2.0 & 2021-03-19 & Remove the \texttt{num\_wires} and associated input size data and add a \texttt{@delete} directive. \\
+  \hline
+  1.0.0 & 2021-07-20 & Add ``uniformity'' features: function gates, public-index for loops, and private-condition switch-case statements. \\
+  \hline
+  1.0.1 & 2022-04-29 & Fix the following issues:
+  \begin{itemize}
+      \item Fix switch-statement semantics which required a nested switch-statement where the outer case is inactive and the inner switch-statement has no active branch to cause an unexpected witness-statement invalidity.
+      \item Constrain for-loop bounds and wire-ranges such that the first must be less than or equal to the last iteration or wire.
+      \item Add a warning that the switch-statement conversion algorithm (\ref{multiplexing}) may produce a poorly-formed relation with certain forms of switch-statement and for-loop nesting. Add a suggestion to unroll for-loops in those conditions.
+      \item Assorted typo fixes and performance improvements.
+  \end{itemize} \\
+  \hline
+\end{tabularx}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{Introduction}\label{intro}
+
+This document specifies the current version of the SIEVE Intermediate Representation (IR).
+Changes to this specification are to be discussed and modified only through the decision process outlined in the \href{https://docs.google.com/document/d/1imP-9fXy8fQwr1e6ZEuhHnVDGkh1YdUOjEd1ifas6IM/edit?ts=5f614241&pli=1}{SIEVE IR Agreement document}.
+This document will be updated to reflect such changes. \\
+
+The IR is an interaction between the front-end and the back-end portions of a Zero Knowledge (ZK) proof pipeline.
+The frontend transforms high level statements in a target domain into the IR.
+It is the producer of the three resources which are the subject of this document.
+The backend is the consumer of them: it is an interaction between a Prover and a Verifier, where the Prover wishes to prove a statement to the Verifier, without revealing a secret component of the proof. \\
+
+At a high level, this interaction involves four (4) resources, one of which is still \href{https://github.mit.edu/sieve-all/collaboration/issues/15}{under development}.
+Conceptually, each resource could be stored as a file, or transported as a stream.
+\begin{itemize}
+  \item Relation - a set of directives forming a mathematical relationship between inputs. We use the language of circuitry to describe this relationship.
+  \item Instance - common inputs to the circuit, provided by the frontend to the backend, and within the backend are available to Prover and Verifier.
+  \item Short Witness - secret inputs to the circuit, provided by the frontend to the backend, which are later used in proof construction as secrets of the Prover.
+  We refer to this as a ``short witness'' to distinguish from the Rank One Constraint System's (R1CS) witness in which each variable must have an assignment.
+In the SIEVE IR, only certain wires are assigned from the short witness, the others are computed by the circuit.
+  \item ``JR'' Hints (``I+1 Representation'') - hints from the backend to the frontend describing optimal circuit generation parameters. This resource is currently \href{https://github.mit.edu/sieve-all/collaboration/issues/15}{under development}.
+\end{itemize}
+
+\noindent \includegraphics[width=0.75\textwidth,center]{ir-dataflow.png} \\
+
+In its simplest form, the relation is a list of gate directives, each with an output wire and two input wires.
+The gates and their connections through wires form a circuit.
+This simple form is useful for streaming, where the proof system may consume a gate, process it, and immediately discard everything except the output wire.
+These simple circuits can process wire values in two fields, either $GF(p)$ (``arithmetic'') or $GF(2)$ (``boolean'').
+Beyond this simple form, the IR adds features for expressing uniformity in the circuit.
+These features may be toggled on or off for a given relation, either enabling greater expressiveness, or guaranteeing the simple stream processing.
+The first of these features is ``function-gates'' which encapsulate functionalities to be reused.
+``For-loops'' repeat a sub-circuit for a fixed number of repetitions.
+Lastly ``switch-case statements'' enable private conditions to be expressed directly in the IR.
+These constructs both compact a relation and allow proof systems to quickly recognize structures and in some cases amortize computational effort.\\
+
+\subsection{Concrete IR Formats}
+This specification defines two forms, to resolve conflicting usage patterns between human and computer use cases.
+To avoid ambiguity during translation from binary to text or vice-versa, special care must be taken to ensure that the text and binary formats remain isomorphic.
+Specifically, every element defined by one format has an equivalent in the other format.\\
+
+\begin{itemize}
+  \item Text format - For human use during education, demonstration, and development.
+  \item Binary format - For automated use in a performance critical environment.
+\end{itemize}
+
+\subsection{IR Validity and Semantics}\label{ir_validity}
+In addition to isomorphic structure, both formats should have the same semantics.
+This specification considers a few levels of validity, ranging from syntax and recognition through the acceptance of a proof given in the IR.
+Each of the following validities is considered successive over the prior.
+
+\begin{enumerate}
+    \item \textbf{Syntactic Validity:} If a resource matches the syntactic constraints of either the Text (section \ref{text}) or Binary (section \ref{binary}) formats, then it is syntactically valid.\\
+    \item \textbf{Resource Validity:} Each resource may be \textit{well-formed} if it, in isolation, satisfies constraints given in section \ref{text}.
+    \begin{itemize}
+        \item \textbf{Relation Well-formedness:} Satisfied mainly by its gates being topologically ordered, and in single static assignment (SSA) form.
+        \item \textbf{Instance Well-formedness} and \textbf{Witness Well-formedness:} In isolation, the validity of these resources is indicated by each value being a member of the field.
+    \end{itemize}
+    \item \textbf{Evaluation Validity:} Considers all three resources together by evaluating each directive of the relation, consuming each value from the instance and witness streams, and checking that each \texttt{\$assert\_zero} directive carries the value $0$. If this is the case, then statement has a valid set of witness values that evaluate the circuit. In other words, when passed through a ZK backend system, the proof generated would be verified.
+\end{enumerate}
+
+Resource and Evaluation Validities may be collectively referred to as \textit{semantics}.
+
+\subsection{IR Tooling (Informational only)}
+We will briefly describe a few software suites for working with the SIEVE IR.
+They are overviewed for informational purposes only, and their inclusion is not to be construed as an endorsement of either.
+
+\textit{WizToolKit} is a toolkit and a library designed for working with the SIEVE IR in C++.
+It includes parsing APIs for both the text and binary formats along with tools for checking \textit{resource validity} and \textit{evaluation validity} (\texttt{wtk-firealarm}), converting between the text and binary formats (\texttt{wtk-press}), and visualizing relations in graph form (\texttt{wtk-viz}).
+\textit{WizToolKit} can be found in the \href{https://github.mit.edu/sieve-all/wiztoolkit}{WizToolKit Repository}.\\
+
+\textit{zkInterface-SIEVE} is an implementation of the FlatBuffers-based SIEVE IR and a set of tools used to enable interoperability between teams. The library extends the open-source \href{https://github.com/QED-it/zkinterface} library, which integrates several R1CS frontends and backends.
+It includes API for producing and consuming relations in the IR binary format, and allows for parsing and printing JSON and YAML textual formats. The library includes a \texttt{validator} tool for checking \textit{resource validity}, an \texttt{evaluator} tool for checking \textit{evalutation validity}, a \texttt{metrics} tool for checking different stats about the circuit,  as well as converting to and from the existing \textit{zkInterface} R1CS relations.
+\textit{zkInterface-SIEVE} can be found in the \href{https://github.mit.edu/sieve-all/zkinterface-sieve/tree/strict-IR1}{zkInterface-sieve repository}.\\
+
+\newpage
+\section{Example}\label{example}
+A few samples of the SIEVE IR are given in this section.
+
+\subsection{Point on Curve}\label{ex_ir0}
+The following table shows an example arithmetic circuit.
+The relation, instance, and witness are shown in their own columns.
+The header resource is shown as an element of each of the other resources. \\
+
+{
+\lstset{language=ir}
+\lstset{basicstyle=\scriptsize}
+\noindent
+\begin{tabularx}{\textwidth}{|X|X|X|}
+\hline
+\textbf{Relation} & \textbf{Instance} & \textbf{Witness} \\
+\hline
+This relation will check that a given point is a point on a Montgomery curve.\newline
+$By^2 = x^3 + Ax^2 +x$
+& A, and B, defining the curve are given as the instance -- available to both Prover and Verifier.
+& x, and y, the point on the curve are the witness -- available only to the Prover. \\
+\hline
+%% Trail every newline in the listing with ^^j, otherwise the newline gets stripped by tabular.
+\begin{lstlisting}^^J
+// Header Start^^J
+version 1.0.0;^^J
+field^^J
+  characteristic 97^^J
+  degree 1;^^J
+// Header End^^J
+relation^^J
+gate_set: arithmetic;^^J
+features: simple;^^J
+@begin^^J
+$2 <- @short_witness; // x^^J
+$3 <- @mul($2, $2); // x^2^^J
+$4 <- @mul($2, $3); // x^3^^J
+$0 <- @instance; // A^^J
+$5 <- @mul($3, $0); // Ax^2^^J
+$6 <- @add($4, $5);^^J
+$7 <- @add($6, $2); // RHS^^J
+@delete($0);^^J
+@delete($2, $6);^^J
+$8 <- @short_witness; // y^^J
+$9 <- @mul($8, $8); // y^2^^J
+$1 <- @instance; // B^^J
+$10 <- @mul($9, $1); // LHS^^J
+@delete($8, $9);^^J
+$11 <- @mulc($7,<96>);^^J
+$12 <- @add($11,$10);^^J
+@assert_zero($12);^^J
+@end^^J
+\end{lstlisting} &
+\begin{lstlisting}^^J
+// Header Start^^J
+version 1.0.0;^^J
+field^^J
+  characteristic 97^^J
+  degree 1;^^J
+// Header End
+^^J
+instance @begin^^J
+  < 15 > ;^^J
+  < 4 > ;^^J
+@end^^J
+\end{lstlisting} &
+\begin{lstlisting}^^J
+// Header Start^^J
+version 1.0.0;^^J
+field^^J
+  characteristic 97^^J
+  degree 1;^^J
+// Header End
+^^J
+short_witness @begin^^J
+  < 2 > ;^^J
+  < 39 > ;^^J
+@end^^J
+\end{lstlisting} \\
+\hline
+\end{tabularx}
+}
+
+\subsection{Fibonacci}\label{ex_ir1}
+These excerpts of IR code calculate the first ten (10) Fibonacci numbers.
+Notably, the number of repetitions is \textit{not} private, it is a constant of the circuit.
+Two versions are presented, one using an anonymous function as the body of the for-loop, another using a named function.\\
+
+\subsubsection*{Anonymous For-Loop Body}
+\lstset{language=ir}
+\begin{lstlisting}
+version 1.0.0;
+field characteristic 97 degree 1;
+relation
+gate_set: arithmetic;
+features: @for;
+@begin
+$0 <- <1>;
+$1 <- <1>;
+$2...$10 <- @for i @first 2 @last 10
+  $i <- @anon_call($(i - 1), $(i - 2),
+      @instance: 0, @short_witness: 0)
+    $0 <- @add($1, $2);
+  @end
+@end
+@end
+\end{lstlisting}
+
+\subsubsection*{Named For-Loop Body}
+\lstset{language=ir}
+\begin{lstlisting}
+version 1.0.0;
+field characteristic 97 degree 1;
+relation
+gate_set: arithmetic;
+features: @function, @for;
+@begin
+@function(add_2, @out: 1, @in: 2,
+    @instance: 0, @short_witness: 0)
+  $0 <- @add($1, $2);
+@end
+$0 <- <1>;
+$1 <- <1>;
+$2...$10 <- @for i @first 2 @last 10
+  $i <- @call(add_2, $(i - 1), $(i - 2));
+@end
+@end
+\end{lstlisting}
+
+\subsection{Matrix Multiplication}
+This example demonstrates the multiplication of two matrices.
+It reads matrix $M$ from the instance and matrix $N$ from the witness.
+It also reads $C$ from the instance.
+Then it computes $C'$ as $M*N$ and asserts that $C=C'$.\\
+
+\begin{lstlisting}
+version 1.0.0;
+field characteristic 97 degree 1;
+relation
+gate_set:arithmetic;
+features:@for,@function;
+@begin
+@function(sum, @out: 1, @in: 4, @instance: 0, @short_witness: 0)
+  // out: $0
+  // in: $1 ... $4
+  $5 <- @add($1, $2);
+  $6 ... $6 <- @for i @first 2 @last 2
+    $(i + 4) <- @anon_call($(1 + i), $(3 + i),
+        @instance: 0, @short_witness: 0)
+      $0 <- @add($1, $2);
+    @end
+  @end
+  $0 <- @add($4, $6);
+@end
+
+// M (3x4): $0...$11 (instance)
+// N (4x5): $27...$46 (witness)
+// C (3x5): $12...$26 (instance)
+// C' (3x5): $47...$61
+
+// Computes the product C':=M*N, and checks that C'==C
+
+$0 ... $11 <- @for i @first 0 @last 11
+  $i <- @anon_call(@instance: 1, @short_witness: 0)
+    $0 <- @instance;
+  @end
+@end
+$12 ... $26 <- @for i @first 12 @last 26
+  $i <- @anon_call(@instance: 1, @short_witness: 0)
+    $0 <- @instance;
+  @end
+@end
+$27 ... $46 <- @for i @first 27 @last 46
+  $i <- @anon_call(@instance: 0, @short_witness: 1)
+    $0 <- @short_witness;
+  @end
+@end
+
+$47 ... $61 <- @for i @first  0 @last 2
+  $(47 + (i * 5)) ... $(51 + (i * 5)) <- @anon_call(
+      $0 ... $11, $27 ... $46,
+      @instance: 0, @short_witness: 0)
+    // C'[i][...]: $0 ... $4
+    // M: $5 ... $16
+    // N: $17 ... $36
+    $0 ... $4 <- @for j @first 0 @last 4
+      $j <- @anon_call($5 ... $16, $17... $36,
+          @instance: 0, @short_witness: 0)
+        // C'[i][j]: $0
+        // M: $1 ... $12
+        // N: $13 ... $32
+        $33 ... $36 <- @for k @first 0 @last 3
+          $(k + 33) <- @anon_call(
+              $(1 + ((i * 4) + k)), $(13 + ((k * 5) + j)),
+              @instance: 0,@short_witness: 0)
+            $0 <- @mul($1, $2);
+          @end
+        @end
+        $0 <- @call(sum, $33 ... $36);
+      @end
+    @end
+  @end
+@end
+
+// Check that C' == C
+@for i @first 0 @last 2
+  @anon_call(
+      $((i * 5) + 12) ...$((i * 5) + 16),
+      $((i * 5) + 47) ... $((i * 5) + 51),
+      @instance: 0, @short_witness: 0)
+    // C[i][...]: $0 ... $4
+    // C'[i][...]: $5 ... $9
+    @for j @first 0 @last 4
+      @anon_call($j, $(j + 5), @instance: 0, @short_witness: 0)
+        $2 <- @mulc($0, < 96 >);
+        $3 <- @add($1, $2);
+        @assert_zero($3);
+      @end
+    @end
+  @end
+@end
+@end
+
+\end{lstlisting}
+
+%%%%
+\input{01-syntax}
+%%%%
+\input{02-textual}
+%%%%
+\input{03-binary}
+%%%%
+\input{04-converters}
+%%%%
+\input{05-contributors}
+%%%%
+\input{06-appendix}
+
+
+
+\end{document}
