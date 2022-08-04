@@ -7,5 +7,7 @@ It represents ZK statements using circuits.
 The Program has elected to release the IR Specification as a public artifact in the interest of promoting our research and driving the adoption of ZK Proofs beyond blockchain applications.
 You can https://github.com/sieve-zk/ir/raw/main/v1.0.1/sieve-ir-v1.0.1.pdf[click here to read the latest SIEVE IR Specification].
 
+**Distribution Statement A**: Approved for Public Release, Distribution Unlimited.
+
 This material is based upon work supported by DARPA under Contracts No. HR001120C0087, HR001120C0086, HR001120C0085 and Agreement No. HR00112020021.
 Any opinions, findings and conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of DARPA.
