@@ -1,0 +1,182 @@
+
+\section{Circuit Configuration Communication (CCC)}
+
+\subsection{Motivation}
+
+To ease interoperation each backend should provide a configuration file declaring available types and plugins that the frontend may use.
+This \textit{Circuit Configuration Communication}, or \textit{CCC} for short, is a static configuration file provided with the installation of a backend, and the frontend can configure from it while generating a statement.
+The CCC starts with supported plugins, then types, conversions, and it may end with plugin constraints.
+A compatible frontend will only use
+\begin{itemize}
+    \item the types supported by the targeted backend according to the CCC file,
+    \item the standard gates (\Cref{subsec:standardgates}),
+    \item the conversion gates supported by the targeted backend according to the CCC file, and
+    \item the plugins supported by the targeted backend according to the CCC file.
+\end{itemize}
+
+All SIEVE IR compatible backends must provide a CCC, and all SIEVE IR compatible frontends must ingest a backend's CCC to generate a statement for the backend.
+In the case that a backend cannot provide a feature (such as a type or a plugin) which the frontend would require, the frontend will be unable to generate a statement, and the pair of frontend and backend would be mutually incompatible.
+
+\subsection{CCC content and syntax}
+
+% 
+A CCC file starts with the standard IR header (\Cref{sec:headers}), declaring its resource type as \texttt{configuration}.
+It list the plugins, families of types, and conversion gates supported by the backend.
+
+Each available plugin is specified by name using the same \texttt{@plugin plugin\_name;} syntax as the Circuit IR.
+A plugins presence in the CCC indicates its availability, meaning that the frontend is allowed to use it, but it does not require the frontend to use it.
+The frontend may use any subset of the backend's available plugins.
+Similarly, a backend may indicate that no plugins are supported, by leaving the plugins list empty.
+
+Here is an example plugin list indicating the availability of the \verb|mux_v0|, \verb|arith_ram_v0|, and \verb|arith_ram_v1| plugins.
+Presumably, a frontend could then choose if to use the \verb|mux_v0| plugin, and if it needs RAM it could choose either version of the ram plugin.
+The frontend could also use both versions of the RAM plugin, although that would be redundant and confusing.
+
+\begin{lstlisting}[language=ir]
+@plugin mux_v0;
+@plugin ram_arith_v0;
+@plugin ram_arith_v1;
+\end{lstlisting}
+
+\subsection{Type Families}\label{sec:families}
+
+Types are grouped into ``type families'' in the CCC.
+Each type family encompasses a set of types which are somehow related.
+For example all fields which use Mersenne primes may be grouped into a ``Mersenne family''.
+
+Each type family is specified first by what kind of type it is, then by predicates which constrain the set of possible types in the family.
+A type family may be referenced later in the CCC by its index in the order in which they appear, same as how Circuit IR types are referenced.
+There are four kinds of types, each having a different mathematical structure and accordingly different meanings for predicates.
+
+\begin{itemize}
+  \item A \texttt{field} type is defined by a single prime characteristic.
+    Implicitly, the characteristic must be prime, and the predicates of a \texttt{field} family enforce further restrictions on it.
+    A \texttt{field} family has the form \texttt{@type field(\textit{predicate} [, \textit{predicates...}]);}.
+    An empty list of predicates (e.g. empty parenthesis) indicates that any prime is supported (including, for example, 7).
+  \item An \texttt{ext\_field} type is defined by a base field, a polynomial order, and a numeric encoding of polynomial coefficients (see \Cref{sec:types}).
+    There are three groups of predicates to an \texttt{ext\_field} family.
+    The first group is a list of previously declared base \texttt{field} families, referenced by index.
+    The base type of a member of this \texttt{ext\_field} family must be a member of one of the allowed base \texttt{field} families, but need not be a member of all (in fact, two base \texttt{field} families may be distinct of each other).
+    The second group is predicates upon the order of the extension field.
+    The order must be greater than one, and predicates may define additional restrictions.
+    A third group defines predicates upon the numerically encoded polynomial coefficients.
+    The polynomial must be irreducible, and predicates may define additional restrictions.
+    An \texttt{ext\_field} family has the form \texttt{@type ext\_field (\textit{base\_idx} [, \textit{base\_idxs...}]) (\textit{predicate} [, \textit{predicates...}]) (\textit{predicate} [, \textit{predicates...}]);}.
+    The family must define at least one \texttt{\textit{base\_idx}}, but both the order predicates and polynomial predicates may be empty.
+  \item A \texttt{ring} type uses a ring over a $2^n$ modulus, providing the familiar bit representation for n-bit integers.
+    The predicates of a \texttt{ring} family enforce restrictions on $n$.
+    A \texttt{ring} family has the form \texttt{@type ring(\textit{predicate} [, \textit{predicates...}]);}.
+    An empty list of predicates (e.g. empty parenthesis) indicates that any $n$ is supported.
+  \item A \texttt{plugin} type is defined using plugins. Plugin type families use plugin constraints (see below) instead of predicates.
+    A \texttt{plugin} family has the form \texttt{@type @plugin \textit{plugin\_name};}.
+\end{itemize}
+
+\subsection{Predicates}\label{sec:predicates}
+
+Predicates define constraints upon numeric parameters of a type.
+The following predicates exist.
+
+\begin{itemize}
+  \item \texttt{less\_than( numeric )} constructs a predicate requiring the parameter to be less than the specified value.
+  \item \texttt{greater\_than( numeric )} constructs a predicate requiring the parameter to be greater than the specified value.
+  \item \texttt{equals( numeric )} constructs a predicate requiring the parameter to equal the specified value.
+  \item \texttt{is\_mersenne} is a predicate requiring that the parameter be a Mersenne prime.
+  \item \texttt{is\_proth} is a predicate requiring that the parameter be a Proth prime.
+  \item \texttt{is\_power\_of\_2} is a predicate requiring that the parameter be a power of two.
+\end{itemize}
+
+When a type uses multiple predicates, each predicate is ANDed with the others.
+To produce an OR relation between predicates, simply create multiple type families.
+
+\subsection{Conversion Declarations}\label{sec:ccc_conv_decl}
+
+Conversion gate declarations specify which type families the backend supports conversions between.
+Conversion gates are declared with \texttt{@convert(@out: family\_index\_out, @in: family\_index\_in);}, where the type families converted to and from are specified by their indices.
+It is currently not possible to configure constraints on the number of input or output wires in a conversion.
+% 
+
+\subsection{Plugin Constraints}\label{sec:plugin_constraints}
+
+Certain plugins may define additional constraints, such as constraints on
+vector widths or RAM address and value types.
+For each such plugin that the backend supports, the CCC should contain a
+\emph{constraint block} delimited by \texttt{@plugin\_constraint(ram) ... @end}, containing
+\texttt{@constraint(...)} lines specific to that plugin.
+The arguments to each \texttt{@constraint} line consist of comma-separated identifiers and
+integers, similar to the arguments of a function's \texttt{@plugin} binding
+declaration.
+Predicates may also be used within a \texttt{@constraint}, however their associativity and combinations with arbitrary identifiers or integers is plugin defined.
+Each plugin that uses constraints will specify the structure and semantics of
+\texttt{@constraint} lines allowed within the plugin's constraint block.
+
+\subsection{Example}\label{sec:ccc_example}
+
+\begin{lstlisting}[language=ir]
+version 2.0.0;
+configuration;
+
+// The following plugins may be used
+@plugin mux_v0;
+@plugin ram_arith_v0;
+@plugin ram_arith_v1;
+
+// 0: The field of exactly 2
+@type field(equals(2));
+
+// 1: Any prime greater than 1 million
+@type field(greater_than(1000000));
+
+// 2: Any mersenne prime which is greater than 100 and less than 1000.
+// To avoid confusion, for a Mersenne Prime p such that p = 2**m - 1,
+// 100 < p < 1000, rather than m.
+@type field(is_mersenne, greater_than(100), less_than(1000));
+
+// 3: An extension field over GF(2**4)
+@type ext_field (0) (equals(4)) ();
+
+// 4: a 16, 32, or 64-bit unsigned integer
+@type ring(is_power_of_2, less_than(65), greater_than(15));
+
+// 5, 6: RAM Types for either the v0 or v1 RAM plugin
+@type @plugin ram_arith_v0;
+@type @plugin ram_arith_v1;
+
+// Conversion from large fields (type 1) to Booleans (type 0)
+@convert(@out: 0, @in: 1);
+
+// Conversion from large primes (type 1) to Mersennes (type 2)
+@convert(@out: 2, @in: 1);
+
+// Conversions from the extension field (type 3) to Booleans (type 0)
+// Note, that the IR only defines conversions involving extension
+// fields to or from their base fields.
+@convert(@out: 0, @in: 3);
+
+// Bidirectional conversions of fields (type 1) and rings (type 4)
+@convert(@out: 4, @in: 1);
+@convert(@out: 1, @in: 4);
+
+// Note that different versions of the same plugin are
+// unlikely to be compatible
+// INVALID: @convert(@out: 5, @in: 6);
+
+// Note that although constraints are shown for the vectors_v1
+// plugin, they are shown for demonstration purpose and are not
+// standardized. Frontends are unlikely to recognize these
+// constraints.
+
+@plugin_constraints(vectors_v1)
+  // Element type must match either of the first two @field lines.
+  // The plugin spec defines the meaning of repeated element_type
+  // constraints; in this case, we assume repeated lines are
+  // allowed and that the constraint is satisfied if at least one
+  // line is satisfied.
+  @constraint(element_type, 0);
+  @constraint(element_type, 1);
+
+  // Vector width must be a power of two between 2 and 16.  The
+  // meaning of these constraints is defined by the plugin spec.
+  @constraint(vector_width, is_power_of_2, 2, 16);
+@end
+\end{lstlisting}
+

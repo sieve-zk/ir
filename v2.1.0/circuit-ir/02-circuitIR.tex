@@ -1,0 +1,545 @@
+\section{Headers}
+\label{sec:headers}
+
+Please see the \textit{Headers} section of \textit{Introduction to the SIEVE Intermediate Representation}.
+
+\section{Circuit-IR}
+\label{sec:circuitir}
+
+\subsection{Header}
+\label{subsec:headers}
+
+As stated in \Cref{sec:headers}, the Circuit-IR header starts with the version number and resource type.
+\begin{lstlisting}[language=ir]
+version 2.0.0;
+circuit;
+\end{lstlisting}
+Next, all plugins (\Cref{sec:plugins}), types, and conversion gates that are used in the file are declared up front in the header, before
+the \texttt{@begin} keyword.
+The order of these declarations must be sorted.
+Plugins must appear first, followed by types, and then conversion gates come last.
+
+A type declaration specifies the types that are used in the rest of the file.
+Types can specify either a \texttt{field}, \texttt{ext\_field}, or \texttt{ring}, as defined in \Cref{sec:types}.
+Type declarations also implicitly specify a type-index, assigned incrementally as each type is specified. The maximum number of types that can be defined is \maxfieldcount.
+
+It is a failure of resource validity to declare the same type more than once. This property allows backends to compare types by comparing indices, which is less computationally expensive
+(in particular when dealing with large primes or structured types defined by plugins).
+
+\begin{lstlisting}[language=ir]
+// index 0: Boolean
+@type field 2;
+// index 1: 2^61 - 1
+@type field 2305843009213693951;
+// index 2: GF(2^63) with polynomial modulus x^63 + x + 1
+@type ext_field 0 63 9223372036854775811;
+// index 3: Ring over 2^32
+@type ring 32;
+\end{lstlisting}
+%
+This example declares two field types for the Boolean and $2^{61}-1$ prime fields, extension field type for $GF(2^{63})$, and a ring type for $2^{32}$, respectively indexed by 0, 1, 2, and 3.
+
+All conversion gates used in the file must be declared in the header.
+Each conversion gate declaration specifies which fields are converted between and how many of each field is input and output.
+Note that the length of input and output ranges must be greater than 0.
+Here are a few examples.
+%
+\begin{lstlisting}[language=ir]
+// Convert Booleans to Mersenne61 and back
+@convert(@out: 1:1, @in: 0:61);
+@convert(@out: 0:61, @in: 1:1);
+// Convert Mersenne61 to 25519 and back
+@convert(@out: 1:5, @in: 2:1);
+@convert(@out: 2:1, @in: 1:5);
+\end{lstlisting}
+Conversion gates are fully specified in \cref{subsec:conversiongates}.
+
+\subsection{Types}\label{sec:types}
+
+The Circuit-IR supports multiple types, as specified below.
+\begin{itemize}
+  \item \texttt{@type field <p>}: This type specifies a field modulo prime
+        \texttt{p}.
+
+        Examples:
+        \begin{lstlisting}[language=ir]
+// index 0: Boolean
+@type field 2;
+// index 1: 2^61 - 1
+@type field 2305843009213693951;
+        \end{lstlisting}
+
+  \item \texttt{@type ext\_field <index> <degree> <modulus>}: This type
+        specifies an extension field $GF(p^n)$, where \texttt{index} denotes the
+        type index of the (non-extension) field $p$, \texttt{degree} denotes the
+        degree $n$ of the extension field's polynomial modulus, and
+        \texttt{modulus} is an integer constant which denotes the irreducible
+        polynomial modulus of the extension field, as explained below. The value
+        of \texttt{modulus} MUST be less than $p^n$, and the value of
+        \texttt{index} MUST be associated with an already defined type.
+
+        \medskip\noindent\textbf{Constant representation.} For extension fields,
+        constants (including the \texttt{modulus} value above) are represented
+        as base-10 integers, where the coefficients are the digits of the
+        integer when interpreted in the base field $p$. The coefficient for the
+        $X^k$ term is given by the $k$th digit of the constant written in base $p$,
+        where the 0th digit is the least significant.
+
+        As an example, for $GF(2^{63})$ the constant 9223372036854775811 denotes
+        the polynomial $X^{63} + X + 1$.
+
+        Examples:
+        \begin{lstlisting}[language=ir]
+// index 0: Boolean
+@type field 2;
+// index 1: GF(2^63) with polynomial modulus x^63 + x + 1
+@type ext_field 0 63 9223372036854775811;
+        \end{lstlisting}
+
+  \item \texttt{@type ring <width>}: This type specifies a ring, $\mathbb{Z}_{2^n}$.
+        Practically, these act like conventional unsigned base-2 integers.
+
+        Examples:
+        \begin{lstlisting}[language=ir]
+// index 0: unsigned 32-bit integers
+@type ring 32;
+        \end{lstlisting}
+\end{itemize}
+
+
+\subsection{Public and Private Inputs}
+Inputs to the circuit are provided through separate resources (See Section \ref{sec:streams}) and accessed as streams.
+There are two streams per type, one for public inputs and one for private (prover only) inputs.
+%
+Stream access uses the following syntax for public inputs:
+\begin{lstlisting}[language=ir]
+$out_0 [... $out_n] <- @public([type_idx]);
+\end{lstlisting}
+And the following syntax for private inputs:
+\begin{lstlisting}[language=ir]
+$out_0 [... $out_n] <- @private([type_idx]);
+\end{lstlisting}
+Items are read from the stream corresponding to the type index and assigned to
+the associated output wires. If the type index is not specified, it defaults to
+zero.
+
+\subsection{Memory Management}
+
+Backends that consume SIEVE IR are highly optimized.
+To minimize their overhead in managing memory, the IR exposes primitives to allocate and deallocate ranges of memory.
+There are strict restrictions
+on memory management: many operations require a range of input or output wires
+that are not only consecutive but also are part of the same allocation.
+This allows optimized backends to ensure that the input or output wires are
+stored in contiguous memory.
+Two wires may have consecutive wire-numbers, but be non-contiguous in memory,
+depending on the backend's internal memory management strategy.
+
+Each type is given its own numbering space, with wire-numbers in the range of $0 ... 2^{64}-1$.
+Most directives will use a type-index parameter to select in which type, and in which numbering-space, they will act.
+For example, \texttt{0: \$123} and \texttt{1: \$123} may both be defined, with each wire residing in different numbering space due to their different types.
+
+To allocate a range of wires explicitly, the \texttt{@new([ type\_idx: ] \$first ... \$last);} directive may be used.
+This creates a new allocation containing exactly the wire numbers \texttt{\$first ... \$last},
+but does not assign values to those wires.
+Reads from uninitialized wires is a failure of resource validity.
+The new allocation must not overlap any previous allocation.
+If the type index is not specified, it defaults to zero.
+
+%
+\begin{lstlisting}[language=ir]
+@new(1: $100 ... $200);
+\end{lstlisting}
+
+Directives that assign to wires will implicitly allocate the output wires if needed.
+For a directive that assigns to a range of output wires \texttt{type\_idx: \$first ... \$last},
+if all wires in the range are unallocated, it first creates an allocation as by
+the directive \texttt{@new(type\_idx: \$first ... \$last)} and then assigns to
+the newly-allocated wires.
+If, instead, any of those wires were previously allocated, then they all must
+be part of a single allocation; if only some of the wires in the range were
+allocated, or different wires are part of different allocations, this is a
+failure of resource validity.
+This applies even for single wires; a single output wire such as \texttt{type\_idx: \$wire}
+is treated as a one-element range \texttt{type\_idx: \$wire ... \$wire}.
+If a directive has multiple output wire ranges, each is handled independently,
+even if the ranges use consecutive numbers.
+
+\begin{lstlisting}[language=ir]
+// Assume no wires are previously allocated.
+
+// Implicitly allocates the range $100 ... $199
+$100 ... $199 <- @call(foo1);
+
+// Implicitly allocates the single wire $200
+$200 <- @call(foo2);
+
+@new($300 ... $399);
+// All wires $300 ... $399 are already allocated, so this does
+// not implicitly allocate.
+$300 ... $399 <- @call(foo3);
+
+@new($400 ... $449);
+// Error: only some of the wires are allocated.
+$400 ... $499 <- @call(foo4);
+
+@new($500 ... $549);
+@new($550 ... $599);
+// Error: wires are not all part of a single allocation.
+$500 ... $599 <- @call(foo5);
+
+// This creates a separate allocation for each output range.
+$600 ... $649, $650 ... $699 <- @call(foo6);
+\end{lstlisting}
+%stopzone
+
+The \texttt{@delete} directive deallocates wires with the form \texttt{@delete([ type\_idx: ] \$first ... \$last );}.
+All wires in the range \texttt{type\_idx: \$first ... \$last} must be assigned
+and must not have been previously deleted.
+The range may span multiple allocations, but it must cover each allocation in
+full; deallocating only part of an allocation is a failure of resource
+validity.
+If the type index is not specified, it defaults to zero.
+
+%
+\begin{lstlisting}[language=ir]
+// Set up some allocations
+@new(1: $100 ... $199)
+@new(1: $200 ... $299)
+// Implicit allocations are treated the same as @new
+$300 ... $399 <- @call(foo)
+
+// Error: @delete includes wires that were never allocated
+@delete(1: $300 ... $499)
+
+// Error: @delete covers only part of the $300 ... $399 allocation
+@delete(1: $300 ... $310)
+
+// Delete the entire $100 ... $199 allocation
+@delete(1: $100 ... $199)
+
+// Delete the $200 ... $299 and $300 ... $399 allocations
+@delete(1: $200 ... $399)
+\end{lstlisting}
+
+Once a wire has been deleted, its wire number may not be reused and it may not be deleted again.
+
+\paragraph{IMPORTANT} Notice that the form of nearly all ranges in the IR is \texttt{first ... last} rather than \texttt{first ... length}.
+Ranges are inclusive on both ends.
+
+
+\subsection{Standard Gates}
+\label{subsec:standardgates}
+The form of most gates, unless otherwise specified, is:
+\begin{lstlisting}[language=ir]
+$out <- gate_name([ type_idx:] $left_in, $right_in);
+\end{lstlisting}
+For a circuit to be well-formed, the type index must refer to a valid declared type.
+The type index is optional and defaults to type \texttt{0} when omitted.
+Other gates have variations on this form, and are described as necessary.\\
+
+\begin{itemize}
+  \item \texttt{@add} field or ring addition
+  \item \texttt{@mul} field or ring multiplication
+  \item \texttt{@addc} field or ring addition by a constant
+        \begin{lstlisting}[language=ir]
+$out <- @addc([type_idx:] $left_in, <right_constant>);
+        \end{lstlisting}
+
+        \textbf{Note:} If \texttt{type\_idx} specifies an extension field, then
+        \texttt{right\_constant} contains a decimal encoding of the extension
+        field value, as is explained in \Cref{sec:types}.
+  \item \texttt{@mulc} field or ring multiplication by a constant
+        \begin{lstlisting}[language=ir]
+$out <- @mulc([type_idx:] $left_in, <right_constant>);
+            \end{lstlisting}
+
+        \textbf{Note:} If \texttt{type\_idx} specifies an extension field, then
+        \texttt{right\_constant} contains a decimal encoding of the extension
+        field value, as is explained in \Cref{sec:types}.
+    \item Copy the input wires to the output wires. The total number of input and output wires must be the same. Input and output ranges for copy gates must conform to the same memory contiguity constraints as input and output ranges for function calls as defined in \Cref{sec:funccall}.
+        \begin{lstlisting}[language=ir]
+$out_0 [... $out_n] <- [type_idx_0:]
+                       $in_first_0 [... $in_last_0]
+                       [, $in_first_m [ .. $in_last_m]];
+        \end{lstlisting}
+  \item Assign the input constant to the output wire
+        \begin{lstlisting}[language=ir]
+$out <- [type_idx:] <constant>;
+        \end{lstlisting}
+
+        \textbf{Note:} If \texttt{type\_idx} specifies an extension field, then
+        \texttt{constant} contains a decimal encoding of the extension
+        field value, as is explained in \Cref{sec:types}.
+  \item \texttt{@assert\_zero} assert that a field element is zero
+        \begin{lstlisting}[language=ir]
+@assert_zero([type_idx:] $wire);
+        \end{lstlisting}
+\end{itemize}
+
+For simplicity Boolean gates (in $GF(2)$) are replaced with mathematically equivalent arithmetic operations.
+This table summarizes alternative gates. \\
+
+\noindent\begin{tabular}{|c|c|}
+  \hline
+  \textbf{Boolean Gate} & \textbf{Arithmetic Replacement} \\
+  \hline
+  \verb|@and|           & \verb|@mul|                     \\
+  \verb|@xor|           & \verb|@add|                     \\
+  \verb|@not|           & \verb|@addc(x, <1>)|            \\
+  \hline
+\end{tabular} \\
+
+For a circuit to be well formed, two rules must be obeyed when using and assigning wires.
+First, \textbf{topological ordering} requires that when a wire is used as the input to a gate, it must have been previously defined by an earlier gate in the scope.
+Second, \textbf{single static assignment (SSA)} requires that within a scope a particular wire is never redefined after its original assignment, even if it removed with the \texttt{@delete} directive.\\
+
+\subsection{Conversion Gates}
+\label{subsec:conversiongates}
+Conversion gates enable conversion of wires from one type to another.
+Conversion gates are only supported between two \texttt{field} types or between
+an \texttt{ext\_field} type and its associated \texttt{field} type.
+
+\subsubsection{Conversions Between Field Types}
+Conceptually a list of wires in field A is converted to a list of wires in field B.
+Within the circuit, a conversion gate has the form:
+\begin{lstlisting}[language=ir]
+out_type_idx: $out_first [... $out_last] <- @convert(
+    in_type_idx: $in_first [... $in_last] [, @modulus|@no_modulus]);
+\end{lstlisting}
+The optional \texttt{@modulus} / \texttt{@no\_modulus} specifier specifies the semantics of the conversion; any other value denotes an error.
+If not specified, we default to \texttt{@no\_modulus}.
+%
+The conversion's fields and number of wires must match a conversion specification from the front matter. If it is not the case, there is a resource invalidity.
+Here is an example that uses conversion gates:
+\begin{lstlisting}[language=ir]
+version 2.0.0;
+circuit;
+// field 0: Boolean
+@type field 2;
+// field 1: 2^61 - 1
+@type field 2305843009213693951;
+// field 2: 2^255 - 19
+@type field 57896044618658097711785492504343953926634992332820282019728792003956564819949;
+// Declare used convert gates
+@convert(@out: 1:1, @in: 0:61);
+@convert(@out: 1:5, @in: 2:1);
+@begin
+    ...
+    // convert Booleans to a single Mersenne61
+    1: $0 <- @convert(0: $1 ... $61);
+    // convert a single 25519 to 5 Mersenne61s
+    1: $1 ... $5 <- @convert(2: $0);
+    ...
+@end
+\end{lstlisting}
+%
+The input range \texttt{in\_type\_idx: \$in\_first ... \$in\_last} must be part
+of a single allocation.
+The output range \texttt{out\_type\_idx: \$out\_first ... \$out\_last} must
+either be part of a single allocation or be unallocated; if it is unallocated,
+the range will be implicitly allocated, as with \texttt{@new}.
+
+\medbreak\noindent\textbf{Conversion Semantics.}\label{sec:conversion-semantics}
+Here, we define in detail the specification of a \texttt{@convert} gate.
+Inputs and outputs are expressed in big endian representation.
+There are two possible semantics for conversions:
+\begin{itemize}
+  \item \texttt{@no\_modulus} (overflow semantics):
+        To convert p wires $x_1 ... x_p$ in field A into q wires $y_1 ... y_q$ in field B, we first convert the p wires in field A into a natural number $N = \sum_{i=1}^p x_i \times A^{p-i}$.
+        Then we try to represent $N$ using q wires in field B $y_1 ... y_q$ as $N = \sum_{i=1}^q y_i \times B^{q-i}$.
+        If $N$ cannot be represented in this fashion, this constitutes a proof failure.
+
+  \item \texttt{@modulus} (modulus semantics):
+        To convert p wires $x_1 ... x_p$ in field A into q wires $y_1 ... y_q$ in field B, we first convert the p wires in field A into a natural number $N = \sum_{i=1}^p x_i \times A^{p-i} \mod B^q$.
+        Then we represent $N$ into q wires in field B $y_1 ... y_q$: $N = \sum_{i=1}^q y_i \times B^{q-i}$.
+\end{itemize}
+
+\subsubsection{Conversions Between Extension Field and its Base Field}
+
+For extension fields one can only convert between an extension field $GF(p^n)$ and its base field $p$.
+\begin{lstlisting}[language=ir]
+  out_type_idx: $out_first [... $out_last] <-
+      @convert(in_type_idx: $in_first [... $in_last]);
+\end{lstlisting}
+Note that unlike for conversion gates for the field type, there is no optional
+specifier in this case.
+
+The conversion semantics are straightforward: when converting to the base field,
+the extension field $GF(p^n)$ is decomposed into a sequence of $n$ wires of
+field type $p$. When converting to the extension field, the $n$ wires of field
+type $p$ are used to represent the polynomial coefficients in $GF(p^n)$. For
+both conversion directions the base field wires use little endian ordering; that
+is, \texttt{\$out\_first} represents the coefficient for $X^n$ and
+\texttt{\$out\_last} represents the coefficient for $X^0$.
+
+\begin{lstlisting}[language=ir]
+version 2.0.0;
+circuit;
+// index 0: Boolean
+@type field 2;
+// index 1: GF(2^63)
+@type ext_field 0 63 9223372036854775811;
+// Declare used convert gates
+@convert(@out: 0:63, @in: 1:1);
+@convert(@out: 1:1, @in: 0:63);
+@begin
+  ...
+  // convert Booleans to polynomial in GF(2^63)
+  1: $0 <- @convert(0: $1 ... $63)
+  // convert GF(2^63) to polynomial coefficients
+  0: $1 ... $63 <- @convert(1: $0)
+  ...
+@end
+\end{lstlisting}
+
+\subsubsection{Conversion Between Rings and Fields}
+Ring to ring, ring to field, and field to ring conversion use the same syntax as field to field conversions.
+Each ring wire is to be treated as a vector of $n$-many $GF(2)$ values, in most significant bit first order, where $n$ is the bit-width specified in its type declaration.
+Conversion can then proceed as a field to field conversion.
+
+\subsection{Function Gates}
+
+Function gates define a sub-circuit which may be reused multiple times.
+The function's outputs and inputs are given as ranges mapped sequentially, and by type, into the function's scopes.
+In the function's signature, each range is defined by a length and a type index.
+When the function is invoked, each range is mapped into its scope incrementally from 0.
+
+Function declaration and invocation have the following forms:
+%
+\begin{lstlisting}[language=ir]
+@function(function_name,
+    [@out: out_type_idx_0: out_field_count_0
+	    [, out_type_idx_n: out_field_count_n],]
+    [@in: in_type_idx_0: in_field_count_0
+	    [, in_type_idx_n: in_field_count_n],]
+    )
+  /* gate list */
+@end
+
+[$out_first_0 [ ... $out_last_0 ]
+  [, $out_first_n [ ... $out_last_n ] ] <- ]
+  @call(function_name [, $in_first_0 [ ... $in_last_0 ]
+      [, $in_first_n [ ... $in_last_n ] ] ]);
+\end{lstlisting}
+The length of input and output ranges must be greater than 0 (for all \texttt{i}, $\texttt{out\_field\_count\_i} > 0$ and $\texttt{in\_field\_count\_i} > 0$).
+
+Note that function invocations do not specify the type index for inputs and outputs since they can be inferred from the function signature.
+
+\subsubsection{Function Gate Example}
+\label{sec:funccall}
+\begin{lstlisting}[language=ir]
+@function(dot_prod_10, @out: 1:1, @in: 1:10, 1:10)
+  // omitted
+@end
+
+@new(1: $0 ... $9);
+@new(1: $10 ... $22);
+// assign $0 ... $19
+
+$25 <- @call(dot_prod_10, $0 ... $9, $10 ... $19);
+\end{lstlisting}
+%stopzone
+
+The \texttt{@call} directive must have one range of input wires for each input
+range declared in the \texttt{@function} declaration.
+Each range of input wires must be part of a single allocation.
+Similarly, the \texttt{@call} must have one range of output wires for each
+output range declared in the \texttt{@function}.
+Each range of output wires must either be part of a single allocation or be
+unallocated; if it is unallocated, the range will be implicitly allocated, as
+with \texttt{new}.
+
+\subsubsection{Function Declaration Ordering and Recursion}
+Functions are declared at the top level of the circuit.
+Function names come into scope after their declaration.
+This prevents recursive functions and allows type checking while processing the file as a stream.
+%
+For example, the following invocation is valid.
+\begin{lstlisting}[language=ir]
+@function(a) /* ... */ @end
+
+@function(b)
+  @call(a);
+@end
+
+@call(b)
+\end{lstlisting}
+The next example is invalid since the function \texttt{a} has not been declared and is not yet in scope when \texttt{b} is defined.
+\begin{lstlisting}[language=ir]
+@function(b)
+  @call(a);
+@end
+
+@function(a) /* ... */ @end
+
+@call(b)
+\end{lstlisting}
+
+\subsection{Example}\label{sec:circuitir_example}
+Here is a full example of a right-triangle using the Circuit-IR.
+%
+\begin{lstlisting}[language=ir]
+version 2.0.0;
+circuit;
+@type field 7;
+@type field 127;
+@convert(1:1, 0:1);
+
+@begin
+  // mod 7 hypotenuse
+  $0 <- @public(0);
+  // mod 7 legs
+  $1 <- @private(0);
+  $2 <- @private(0);
+
+  // mod 7 is too small to square them
+  1:$0 <- @convert(0:$0);
+  1:$1 <- @convert(0:$1);
+  1:$2 <- @convert(0:$2);
+
+  // square them
+  $3 <- @mul(1: $0, $0);
+  $4 <- @mul(1: $1, $1);
+  $5 <- @mul(1: $2, $2);
+  $6 <- @add(1: $4, $5);
+
+  // invert the hypotenuse
+  $7 <- @mulc(1: $3, <126>);
+
+  // assert equal
+  $8 <- @add(1: $6, $7);
+  @assert_zero(1: $8);
+@end
+\end{lstlisting}
+
+\subsection{Circuit Semantics and Validity}\label{circuit_ir_validity}
+When working with the Circuit-IR there are three levels of semantics and validity to be considered.
+Each level builds upon the prior level.
+
+\begin{enumerate}
+  \item \textbf{Syntactic Validity:} The IR resource is recognizable in the language defined by the IR's grammar (see appendix \ref{text_syntax} and \ref{binary_syntax}).
+  \item \textbf{Resource Validity:} The IR resource obeys semantic rules which are falsifiable with just the single resource.
+  \item \textbf{Evaluation Validity:} Three IR resources (relation, public inputs, and private inputs) obey semantic rules which are only falsifiable in tandem.
+\end{enumerate}
+
+While syntactic validity is important, it is easy to check using off the shelf parsing tools.
+The focus of this subsection is on resource validity and evaluation validity.
+
+Each resource is checked individually for \textbf{Circuit Well-formedness} or \textbf{Stream Well-formedness} (See Section \ref{sec:streams} for details).
+Circuit Well-formedness focuses on ensuring that wires are connected correctly -- a ``broken'' wire would make the circuit poorly-formed -- and that all declared types are unique.
+
+\begin{description}
+  \item[Type Uniqueness] No type is declared more than once.
+  \item[Topological Ordering] For a wire to be the input to a gate, it must have previously been assigned as an output wire within the same scope.
+  \item[Static Single Assignment] Each wire which is allocated must be assigned exactly once within its scope.
+  \item[Allocation of Range Arguments] When passing a range of wires (as either an input or an output), all wires in the range must belong to the same allocation, and the range's cardinality must match the called function or conversion gate's specification.
+  \item[Deletion of Whole Allocations] When passing a range of wires to a \texttt{@delete} directive, all wires within the range must have previously been assigned and all allocates within the range must be whole allocations. E.g. a \texttt{@delete} directive may not split an allocation into smaller portions.
+\end{description}
+
+To meet \textbf{Evaluation Validity}, all three resources are evaluated together, and the following conditions must be met.
+
+\begin{description}
+  \item[Assertions] Each input to an \texttt{@assert\_zero} directive must carry the value $0$.
+  \item[Stream Length Requirement] When the end of the circuit is reached each stream has exactly zero items remaining: it must not have run out of items before reaching the end, and there may not be any extra items.
+\end{description}

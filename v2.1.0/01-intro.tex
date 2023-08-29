@@ -1,0 +1,98 @@
+\section{Introduction}\label{sec:intro}
+
+This document specifies the current version of the SIEVE Intermediate Representation (IR).
+ Throughout the DARPA SIEVE program, changes to this specification were to be discussed and modified only through the decision process outlined in the \href{https://docs.google.com/document/d/1imP-9fXy8fQwr1e6ZEuhHnVDGkh1YdUOjEd1ifas6IM/edit?ts=5f614241&pli=1}{SIEVE IR Agreement document}.
+The IR's developers are currently seeking a venue to host further development and standardization after the SIEVE program ends.
+\\
+
+The IR is an interaction between the front-end and the back-end portions of a Zero Knowledge (ZK) proof pipeline.
+The frontend transforms high level statements in a target domain into the IR.
+It is the producer of the three resources which are the subject of this document.
+The backend is the consumer of them: it is an interaction between a Prover and a Verifier, where the Prover wishes to prove a statement to the Verifier, without revealing a secret component of the proof.
+The primary goal for this specification is to define a standard format for ZK statements, so that there is interoperability between multiple frontends and backends.
+\\
+
+At a high level, ZK proofs involve three resources provided by the frontend and used by the backend as the fact being proven.
+
+\begin{itemize}
+  \item Relation -- a mathematical relationship between the inputs.
+  \item Public inputs -- inputs to the relation given to both the Prover and Verifier.
+  \item Private inputs -- inputs to the relation given only to the Prover.
+\end{itemize}
+
+\noindent \includegraphics[width=0.75\textwidth,center]{ir-dataflow-simple.png} \\
+
+\subsection{Genesis}
+
+In the course of the SIEVE Program, performers experimented with a variety of representations ranging from very high level through very low level.
+The SIEVE Program has proved statements on every platform from mobile web to gigantic cloud instances, with runtime taking anywhere from milliseconds to days to prove.
+Additionally, SIEVE backends have preferred a wide variety of intermediate representations -- including R1CS, C++ compilation, and other custom solutions.
+The greatest challenge in developing the IR has been making it flexible enough to accomodate so many requirements.
+
+The program's first attempt at a flexible IR, the SIEVE IR v1.0, was to essentially overlay high-level features upon a flat circuit with numbered wires.
+This was a failure for backends wanting just flat circuits because they were forced to unroll high level features.
+It was also a failure for the higher level backends because the numbered wires were insufficient to convey high level meaning and long stretches of flat circuitry would cause slowdowns for them.
+
+\subsection{Flexibility and Scalability}
+
+To resolve this issue, the latest SIEVE IR revision has two layers.
+The lower layer, called the Circuit-IR, defines a flat circuit, augmented with flat functions.
+While it is not completely flat, it does strike a balance between statement size and interpreter complexity -- important because many SIEVE backends bottlenecked on disk IO while reading completely flat circuits.
+
+A great strength of the Circuit-IR is circuit streaming.
+Gates are processed one after the other, and their outputs (wires) are stored until needed for further computation.
+Ordinarily, this would cause memory usage to increase until either the circuit ends or the available memory is exhausted.
+The Circuit-IR implements memory management operations and restrictions which enables a circuit to declare what wires it will produce and when it is finished with them, so that its memory may be recycled.
+
+The higher layer, called Translation-IR, is a fairly high level language in terms of control flow.
+For maximal compatibility, SIEVE Performers are also developing a translation into the Circuit-IR, hence the name Translation-IR.
+But the Translation-IR need not be translated just to the Circuit-IR, one of its goals is that it be translatable to non-SIEVE IRs such as the aforementioned R1CS, C++ compilation, or other custom solutions.
+At the time of writing, the Circuit-IR recently survived the program's Phase II Testing Event, while the Translation-IR is currently in development.
+
+\subsection{Multi Field Circuits}
+To most practitioners of ZK, a single prime field is chosen at the beginning of a proof and used throughout.
+However, for some applications it is desirable to use multiple primes for different elements within a single larger proof.
+For example a large and expensive prime may be needed to verify public-key signatures, while a medium sized prime is necessary for large scale business logic.
+
+To accommodate these applications, the IR must allow for multiple fields within a single relation.
+To the frontend each field must describe the type of a wire, while to the backend these wires actually belong to multiple independent proofs.
+An analogy to the real world might be a circuit card with transistor logic on one side and high voltage on the other.
+
+Occasionally information from one field will be required in another.
+The IR models this using a conversion gate with inputs in one field and outputs in another.
+To continue the analogy, a relay would allow information to flow from transistor logic into high voltage, or in reverse, an analog-digital converter.
+In ZK, methodologies must be developed and used to show equivalence of inputs and outputs across independent proofs or even across different proof systems.
+
+\subsection{Resources of the SIEVE IR}
+Each file or connection in the SIEVE IR is referred to as a resource, a stream of bytes to be consumed by the backend.
+A relation is a resource, and so are the inputs to the relation.
+There is also a special configuration resource which helps frontends and backends negotiate compatibility.
+
+The SIEVE IR introduces two types of relation: the Circuit-IR and the Translation-IR.
+\begin{itemize}
+\item The Circuit-IR is defined by flat lists of gates and wires; functions may be defined and reused within the circuit.
+\item The Translation-IR is a program which outputs a relation in the Circuit-IR format.
+The backend is given some amount of control over how the Translation-IR is translated, and is free to reimplement common or standardized libraries, translate to an alternative IR, or even prove statements directly from the Translation-IR.
+\end{itemize}
+
+In recognition that many ZK backends can improve upon simple circuits' performance when particular functionality is desired, both layers of the IR define a \textbf{plugin} interface allowing calls from the IR into backend specific functionality.\\
+
+To ease the frontends choice of configuration constants (such as prime fields and plugin parameters), a Circuit Configuration Communication occurs so that the backend may feed optimal constants to the frontend. \\
+
+In total, the IR winds up with five resources: four in the frontend to backend direction, and a configuration which flows in the opposite direction.
+
+\begin{itemize}
+  \item Relation
+  \begin{itemize}
+     \item Translation-IR -- high level program which emits a flat circuit
+     \item Circuit-IR -- flat circuit which is easy for backends to ingest
+  \end{itemize}
+  \item Public inputs -- a list of inputs known to both the Prover and Verifier
+  \item Private inputs -- a list of inputs known only to the Prover
+  \item Circuit Configuration Communication (CCC) - hints from the backend to the frontend describing features supported by the backend.
+\end{itemize}
+
+This illustration shows how the backends start by producing the CCC -- typically checked in with its source code -- enabling a frontend to choose types and plugins suitable to a backend.
+Then the frontend can produce SIEVE IR enabling a web of available translations before the backend can finally prove the statement.
+
+\noindent \includegraphics[width=0.95\textwidth,center]{ir-dataflow-translation.png} \\

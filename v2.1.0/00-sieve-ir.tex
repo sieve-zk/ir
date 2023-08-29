@@ -1,0 +1,127 @@
+\documentclass[12pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[export]{adjustbox}
+\usepackage[title,titletoc]{appendix}
+
+\usepackage{amssymb,amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\usepackage{tabularx}
+\usepackage{cleveref}
+\usepackage{ltablex}
+\usepackage{alltt}
+\usepackage{listings}
+\usepackage{enumitem}
+
+\definecolor{InternalLinkColor}{HTML}{282888}
+\definecolor{ExternalLinkColor}{HTML}{3333BB}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=InternalLinkColor,
+  urlcolor=ExternalLinkColor
+}
+
+\definecolor{light-gray}{gray}{0.95}
+
+\lstdefinelanguage{ir}
+{
+  backgroundcolor=\color{light-gray},
+  morekeywords={version, circuit, public_input, private_input, configuration, field, @field, ext_field, ring, @begin, @end, @function, @out, @in, @public, @private, @call, @anon_call, @type, @plugin},
+  morekeywords=[2]{@add, @addc, @mul, @mulc, @assert_zero, @delete, @convert, @new},
+  keywordstyle={[2]\it},
+  morecomment=[l]{//}
+}
+
+\lstdefinelanguage{flatbuffer}
+{
+  backgroundcolor=\color{light-gray},
+  morekeywords={table,struct,union},
+  morekeywords=[2]{uint32,uint64,ubyte,string},
+  keywordstyle={[2]\it}
+}
+
+\lstdefinelanguage{json}{
+    backgroundcolor=\color{light-gray},
+    basicstyle=\ttfamily\small,
+}
+
+\lstset{escapechar=\#}
+
+\definecolor{SyntaxGreen}{HTML}{116611}
+\definecolor{SemanticPurple}{HTML}{550077}
+
+\renewcommand{\familydefault}{\sfdefault}
+
+\title{Introduction to the SIEVE Intermediate Representation}
+\author{See Section \ref{contributors} for list of \nameref{contributors}}
+\date{Last Updated: 2023-07-17}
+
+\newcommand{\maxfieldcount}{256}
+
+\begin{document}
+\maketitle
+
+\textbf{Distribution Statement ``A'':} Approved for Public Release, Distribution Unlimited.\\
+
+This material is based upon work supported by DARPA under Contracts No.~HR001120C0087, HR001120C0086, HR001120C0085 and Agreement No.~HR00112020021.  Any opinions, findings and conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of DARPA.
+
+\section*{Identification and History}\label{history}
+
+\begin{tabularx}{\textwidth}{|p{1in}|p{1in}|p{4in}|}
+  \hline
+  \textbf{Version} & \textbf{Date} & \textbf{Notable Changes}                                                                                                                                                                   \\
+  \hline
+  0.1.0            & 2020-09-19    & Initial version as proposed jointly by WizKit and FROMAGER teams on DARPA SIEVE.                                                                                                           \\
+  \hline
+  0.1.1
+                   & 2020-12-16    & A number of bugfixes on the prior version.
+  \begin{itemize}
+    \item Fix typographical errors and omissions.
+    \item Add checks for matching header, \texttt{num\_wires}, and etc., across multiple resources.
+    \item Eliminate unused type-checking and arity-checking attributes from the attribute grammar, because IR0 has only one meaningful type.
+    \item Add \texttt{num\_wires} to the instance and witness in the text and binary grammars.
+  \end{itemize}                                                                                       \\
+  \hline
+  0.2.0            & 2021-03-19    & Remove the \texttt{num\_wires} and associated input size data and add a \texttt{@delete} directive.                                                                                        \\
+  \hline
+  1.0.0            & 2021-07-20    & Add ``uniformity'' features: function gates, public-index for loops, and private-condition switch-case statements.                                                                         \\
+  \hline
+  1.0.1            & 2022-04-29    & Fix the following issues:
+  \begin{itemize}
+    \item Fix switch-statement semantics which required a nested switch-statement where the outer case is inactive and the inner switch-statement has no active branch to cause an unexpected witness-statement invalidity.
+    \item Constrain for-loop bounds and wire-ranges such that the first must be less than or equal to the last iteration or wire.
+    \item Add a warning that the switch-statement conversion algorithm may produce a poorly-formed relation with certain forms of switch-statement and for-loop nesting. Add a suggestion to unroll for-loops in those conditions.
+    \item Assorted typo fixes and performance improvements.
+  \end{itemize} \\
+  \hline
+  2.0.0            & 2022-11-08    & The 2.0.0 revision is a significant departure from prior revisions, regressing some of the haphazardly developed high level features and preparing for the development of a distinct high-level (translation), and low-level (circuit) IR layers.
+  This release was used during the SIEVE Phase II testing event, and specifies the Circuit-IR -- characterized as follows.
+  \begin{itemize}
+    \item Flat circuit with numbered wires.
+    \item Function's encapsulating circuit fragments.
+    \item Explicit allocation directives enable memory efficiency.
+    \item A new plugin system allows access to backend-defined functionality.
+  \end{itemize} \\
+  \hline
+  2.1.0            & 2023-07-17    & Adds ring and extension field types to the Circuit-IR and multi-wire convenience modes for copy gates and input gates. \\
+  \hline
+\end{tabularx}
+
+\newpage
+\tableofcontents
+\newpage
+
+%%%%
+\input{01-intro}
+%%%%
+\input{02-headers}
+%%%%
+\input{03-subdocuments}
+%%%%
+\input{07-contributors}
+
+\end{document}

@@ -1,0 +1,27 @@
+\section{Headers}
+\label{sec:headers}
+
+All SIEVE IR files start with a header.
+The header contains % the following parameters:
+a version number for quick recognition of the IR
+and
+a resource type.
+Each resource type may define additional header declarations that appear after the version and resource type, but before the \texttt{@begin} keyword.
+
+\begin{description}
+  \item[\texttt{circuit}] Circuit-IR
+  \item[\texttt{translation}] Translation-IR
+  \item[\texttt{public\_input}] Public input streams (the \textit{instance})
+  \item[\texttt{private\_input}] Private input streams (the \textit{witness})
+  \item[\texttt{configuration}] the Circuit Configuration Communication
+\end{description}
+
+%
+Here is an example header.
+\begin{lstlisting}[language=ir]
+version 2.0.0;
+private_input;
+\end{lstlisting}
+This indicates the file is a private input resource for version 2.0.0 of the SIEVE IR.
+
+
